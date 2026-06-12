@@ -22,7 +22,11 @@ from tts_utils import load_config
 MALE_VOICES = {'krzysztof', 'daniel', 'thomas', 'alex', 'jorge', 'luca'}
 FEMALE_VOICES = {'ewa', 'zosia', 'samantha', 'anna', 'amélie', 'monica'}
 
-SPEAK_TOOL = "mcp__plugin_simple-tts_simple-tts__speak"
+# The `speak` tool's fully-qualified name depends on how the MCP server was
+# loaded. Marketplace plugin install namespaces it under the plugin; a
+# project-scoped `.mcp.json` load (working inside the repo) does not.
+SPEAK_TOOL = "mcp__plugin_simple-tts_simple-tts__speak"      # plugin install
+SPEAK_TOOL_PROJECT = "mcp__simple-tts__speak"                # project .mcp.json
 
 EXAMPLES = {
     'Polish': {
@@ -112,16 +116,19 @@ def build_tag_instruction(config):
 def build_tool_instruction(config):
     lines = [
         "- At the END of each response, speak a short summary aloud to the user by calling"
-        f" the simple-tts `speak` tool (MCP server `simple-tts`, tool name `{SPEAK_TOOL}`)."
+        " the simple-tts `speak` tool (the `speak` tool from MCP server `simple-tts`)."
         " Call it once, as your final action, when:",
         "  1. Completing a task — say what you did",
         "  2. Before user interaction — say what you need or found, and set priority=true"
         " so it interrupts",
         "  - The user may be away from the screen; this spoken summary is how they know"
         " what happened or that you need them.",
-        "  - If `speak` appears as a deferred tool, load it first with ToolSearch"
-        f" (query: \"select:{SPEAK_TOOL}\"), then call it."
-        " It stays loaded for the rest of the session.",
+        "  - The tool's full name depends on how it was loaded: it appears as either"
+        f" `{SPEAK_TOOL}` (plugin install) or `{SPEAK_TOOL_PROJECT}` (project load)."
+        " Use whichever one is actually present — do not assume one.",
+        "  - If `speak` appears as a deferred tool, load it first with ToolSearch using a"
+        " keyword query (\"simple-tts speak\") so it matches whichever name is registered,"
+        " then call that exact name. It stays loaded for the rest of the session.",
         "  - Do NOT write any `<!-- TTS: ... -->` tag or put this summary in your visible reply —"
         " the tool speaks it, and a visible marker is exactly what we are avoiding here.",
     ]

@@ -52,6 +52,19 @@ class TestToolMode:
         text = build_instruction(self._cfg())
         assert "mcp__plugin_simple-tts_simple-tts__speak" in text
 
+    def test_tool_mode_mentions_project_scoped_name(self):
+        # Working inside the repo, the server is loaded via project .mcp.json,
+        # so the tool is NOT plugin-namespaced — the instruction must cover it.
+        text = build_instruction(self._cfg())
+        assert "mcp__simple-tts__speak" in text
+
+    def test_tool_mode_uses_keyword_toolsearch(self):
+        # A keyword query matches whichever name is registered; an exact
+        # select: of the wrong name would silently fail to load the tool.
+        text = build_instruction(self._cfg())
+        assert "simple-tts speak" in text
+        assert "select:mcp__" not in text
+
     def test_tool_mode_emits_no_tag(self):
         text = build_instruction(self._cfg())
         assert "<!-- TTS:" not in text or "Do NOT write any `<!-- TTS:" in text
