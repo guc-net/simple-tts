@@ -13,8 +13,8 @@ Two delivery mechanisms (config "speak_via"):
 """
 
 import json
-import sys
 import os
+import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
 from tts_utils import load_config
@@ -28,7 +28,8 @@ EXAMPLES = {
     'Polish': {
         'male': '"Poprawiłem parser zgodnie z wytycznymi", "Znalazłem błąd w module autoryzacji", '
                 '"Testy przechodzą, mogę zatwierdzić?", "Potrzebuję zgody na migrację"',
-        'female': '"Poprawiłam parser zgodnie z wytycznymi", "Znalazłam błąd w module autoryzacji", '
+        'female': '"Poprawiłam parser zgodnie z wytycznymi", '
+                  '"Znalazłam błąd w module autoryzacji", '
                   '"Testy przechodzą, mogę zatwierdzić?", "Potrzebuję zgody na migrację"',
     },
     'English': {
@@ -98,7 +99,8 @@ def build_tag_instruction(config):
         "  2. Before user interaction (what you need or found)",
         "  - This tag is read aloud to the user via macOS TTS so they can switch console"
         " knowing the gist of your response without reading it. It must be a natural,"
-        " spoken-language summary — short enough to hear in a few seconds, specific enough to be useful.",
+        " spoken-language summary — short enough to hear in a few seconds,"
+        " specific enough to be useful.",
     ]
     lines += content_rules(config)
     lines.append("  - In this environment use ONLY the TTS tag — never call the simple-tts"
@@ -109,15 +111,17 @@ def build_tag_instruction(config):
 
 def build_tool_instruction(config):
     lines = [
-        f"- At the END of each response, speak a short summary aloud to the user by calling"
+        "- At the END of each response, speak a short summary aloud to the user by calling"
         f" the simple-tts `speak` tool (MCP server `simple-tts`, tool name `{SPEAK_TOOL}`)."
         " Call it once, as your final action, when:",
         "  1. Completing a task — say what you did",
-        "  2. Before user interaction — say what you need or found, and set priority=true so it interrupts",
+        "  2. Before user interaction — say what you need or found, and set priority=true"
+        " so it interrupts",
         "  - The user may be away from the screen; this spoken summary is how they know"
         " what happened or that you need them.",
-        f"  - If `speak` appears as a deferred tool, load it first with ToolSearch"
-        " (query: \"select:" + SPEAK_TOOL + "\"), then call it. It stays loaded for the rest of the session.",
+        "  - If `speak` appears as a deferred tool, load it first with ToolSearch"
+        f" (query: \"select:{SPEAK_TOOL}\"), then call it."
+        " It stays loaded for the rest of the session.",
         "  - Do NOT write any `<!-- TTS: ... -->` tag or put this summary in your visible reply —"
         " the tool speaks it, and a visible marker is exactly what we are avoiding here.",
     ]
