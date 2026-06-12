@@ -4,11 +4,12 @@
 import fcntl
 import json
 import os
-import re
 import random
+import re
 import subprocess
 import sys
 import time
+from datetime import datetime
 
 # Config file location
 CONFIG_PATH = os.path.expanduser("~/.claude/simple-tts-config.json")
@@ -39,7 +40,7 @@ def load_config():
     """Load plugin config. Returns None when the plugin is not configured —
     callers must stay silent in that case (plugin enabled but setup not run)."""
     try:
-        with open(CONFIG_PATH, 'r') as f:
+        with open(CONFIG_PATH) as f:
             stored = json.load(f)
         return {**DEFAULT_CONFIG, **stored}
     except (FileNotFoundError, json.JSONDecodeError):
@@ -60,7 +61,7 @@ def extract_tts_from_transcript(transcript_path, search_lines=50):
     """
     try:
         transcript_path = os.path.expanduser(transcript_path)
-        with open(transcript_path, 'r') as f:
+        with open(transcript_path) as f:
             lines = f.readlines()
 
         for line in reversed(lines[-search_lines:]):
@@ -91,7 +92,7 @@ def load_phonetics(lang_code):
     builtin = os.path.join(PHONETICS_DIR, f"{lang_code}.json")
     for path in (builtin, USER_PHONETICS_PATH):
         try:
-            with open(path, 'r') as f:
+            with open(path) as f:
                 data = json.load(f)
             if isinstance(data, dict):
                 phonetic.update(data)
@@ -121,6 +122,27 @@ def sanitize_for_tts(text, lang_code='pl'):
     text = re.sub(r'\b[A-Z]{2,}\b', spell_caps, text)
 
     return text
+
+
+def in_quiet_hours(config, now=None):
+    """True when the current time falls inside the configured quiet hours
+    ({"quiet_hours": {"start": "22:00", "end": "07:00"}}). Windows may wrap
+    past midnight. Missing, malformed or zero-length windows mean no quiet
+    hours — speech stays on (fail-open by design)."""
+    window = config.get('quiet_hours')
+    if not isinstance(window, dict):
+        return False
+    try:
+        start = datetime.strptime(str(window['start']), '%H:%M').time()
+        end = datetime.strptime(str(window['end']), '%H:%M').time()
+    except (KeyError, ValueError):
+        return False
+    if start == end:
+        return False
+    current = (now or datetime.now()).time().replace(second=0, microsecond=0)
+    if start < end:
+        return start <= current < end
+    return current >= start or current < end
 
 
 def _locked_state(fn):
@@ -156,7 +178,7 @@ def _is_our_say(pid):
         return False
 
 
-def speak(text, priority=False):
+def speak(text, priority=False, force=False):
     """
     Speak text using macOS say with the configured voice. Non-blocking:
     `say` is detached and the hook returns immediately.
@@ -164,11 +186,15 @@ def speak(text, priority=False):
     priority=True (notification hook): kills our running say (if any), always speaks.
     priority=False (stop hook): stays silent while a previous say is still
     playing or finished less than 2 seconds ago.
+    force=True (speak_cli test mode): bypasses mute ("enabled": false)
+    and quiet hours, but still requires a config.
 
-    Silent no-op when the plugin is not configured.
+    Silent no-op when the plugin is not configured, muted, or in quiet hours.
     """
     config = load_config()
     if config is None:
+        return
+    if not force and (not config.get('enabled', True) or in_quiet_hours(config)):
         return
 
     def check_and_kill(state):

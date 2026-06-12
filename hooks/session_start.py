@@ -7,8 +7,8 @@ appending a static block to the user's CLAUDE.md.
 """
 
 import json
-import sys
 import os
+import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
 from tts_utils import load_config
@@ -20,7 +20,8 @@ EXAMPLES = {
     'Polish': {
         'male': '"Poprawiłem parser zgodnie z wytycznymi", "Znalazłem błąd w module autoryzacji", '
                 '"Testy przechodzą, mogę zatwierdzić?", "Potrzebuję zgody na migrację"',
-        'female': '"Poprawiłam parser zgodnie z wytycznymi", "Znalazłam błąd w module autoryzacji", '
+        'female': '"Poprawiłam parser zgodnie z wytycznymi", '
+                  '"Znalazłam błąd w module autoryzacji", '
                   '"Testy przechodzą, mogę zatwierdzić?", "Potrzebuję zgody na migrację"',
     },
     'English': {
@@ -70,7 +71,8 @@ def build_instruction(config):
         "  2. Before user interaction (what you need or found)",
         "  - This tag is read aloud to the user via macOS TTS so they can switch console"
         " knowing the gist of your response without reading it. It must be a natural,"
-        " spoken-language summary — short enough to hear in a few seconds, specific enough to be useful.",
+        " spoken-language summary — short enough to hear in a few seconds, specific"
+        " enough to be useful.",
         f"  - Max 10 words, in {language}, contextual to the user's last message",
         f"  - Examples: {examples}",
         "  - NEVER generic — always relate to what was actually done or needed",
@@ -87,7 +89,8 @@ def build_instruction(config):
         "  - TTS voice may mispronounce foreign words. Rules:",
         f"    - Prefer {language} descriptions over English acronyms or jargon",
         "    - If a technical name MUST appear, use phonetic spelling readable by the TTS voice",
-        "    - NEVER put acronyms (API, GOPATH, JSON, URL) in the TTS tag — describe what they are instead",
+        "    - NEVER put acronyms (API, GOPATH, JSON, URL) in the TTS tag"
+        " — describe what they are instead",
     ]
     return '\n'.join(lines)
 

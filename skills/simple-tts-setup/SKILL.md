@@ -87,7 +87,8 @@ Present ALL questions at once:
 > 3. **Speed** [**220**]: _words per minute (200=normal, 220=slightly faster, 300=fast)_
 > 4. **Your name** [**skip**]: _optional — Claude will sometimes greet you by name (~30% of messages)_
 > 5. **Fallback message** [**skip**]: _optional — short phrase spoken when a response has no TTS tag (e.g. "Done"); default is silence_
-> 6. **Preview?** [**no**]: _say "yes" to hear a sample with your chosen settings_
+> 6. **Quiet hours** [**skip**]: _optional — time window when speech is silenced, e.g. 22:00-07:00_
+> 7. **Preview?** [**no**]: _say "yes" to hear a sample with your chosen settings_
 
 Default voice per language (pick the highest quality available):
 - Polish: Krzysztof (Enhanced) or Ewa (Premium)
@@ -97,6 +98,8 @@ Default voice per language (pick the highest quality available):
 - For other languages, pick the first Enhanced/Premium voice available
 
 Wait for the user's single response.
+
+**Validate the chosen voice** against the `say -v '?'` output from this step: the chosen name must match an installed voice (compare the base name, ignoring quality suffixes like "(Enhanced)"). If it doesn't, list the closest matches for the chosen language and ask again — never write an unverified voice into the config, a typo would silence the plugin with no error.
 
 ## Step 5: Preview (if requested)
 
@@ -122,6 +125,8 @@ Write `~/.claude/simple-tts-config.json`:
 
 Optional keys (add only if the user chose them):
 - `"fallback_message"`: phrase spoken when a response has no TTS tag
+- `"quiet_hours"`: `{"start": "22:00", "end": "07:00"}` — no speech inside this window (may wrap past midnight)
+- `"enabled"`: `false` mutes all speech without uninstalling (toggled by `/tts on|off`; missing = enabled)
 - `"debug"`: `true` to log notification payloads to `~/.claude/simple-tts-notification-debug.log` (auto-trimmed to 200 lines)
 
 That's all — hooks are auto-registered by the plugin, and the TTS instruction is injected into each session by the SessionStart hook based on this config (language, voice gender for grammar forms, name).
@@ -138,10 +143,12 @@ say -v "<voice>" -r <rate> "Setup complete!"
 > - finishing a task
 > - needing your attention
 >
+> To mute/unmute without uninstalling: `/tts off`, `/tts on`
 > To reconfigure: `/simple-tts-setup`
 > To uninstall: `/simple-tts-setup` → Uninstall
 >
 > Custom pronunciations: create `~/.claude/simple-tts-phonetics.json` with `{"term": "phonetic spelling"}` entries — they override the built-in dictionary.
+> Test speech from a terminal (bypasses mute and quiet hours): `python3 hooks/speak_cli.py "your text"` from the plugin directory.
 
 ---
 

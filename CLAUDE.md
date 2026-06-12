@@ -14,6 +14,8 @@ A Claude Code plugin that uses macOS `say` to speak short TTS summaries when Cla
 - **hooks/notification_tts.py** — Notification hook: speaks a short phrase in the configured language (`MESSAGES` catalog), naming the tool from permission messages when possible. Never reads transcript (avoids repeating stale messages)
 - **hooks/session_start.py** — SessionStart hook: injects the TTS-tag instruction as `additionalContext`, generated from config (language, voice gender → grammar forms, name). Replaces the old CLAUDE.md-append approach
 - **hooks/phonetics/<lang>.json** — phonetic dictionaries (English term → phonetic spelling); user overrides merge in from `~/.claude/simple-tts-phonetics.json`
+- **hooks/speak_cli.py** — manual test mode: `python3 hooks/speak_cli.py "text"` speaks through the full pipeline, bypassing mute and quiet hours (`force=True`)
+- **skills/tts/SKILL.md** — `/tts on|off|status`: toggles `"enabled"` in the config (mute without uninstalling)
 - **mcp/server.py** + **.mcp.json** — stdlib-only MCP stdio server with a `speak` tool, for environments without hooks (Cowork, desktop chat). Reuses `tts_utils.speak()`; the SessionStart instruction forbids calling it in Claude Code (tag handles speech there)
 - **skills/simple-tts-setup/SKILL.md** — setup wizard (`/simple-tts-setup`): writes the config file, handles uninstall and migration from pre-2.0 installs
 - **.claude-plugin/plugin.json** — plugin manifest (version auto-bumped by CI)
@@ -25,6 +27,18 @@ A Claude Code plugin that uses macOS `say` to speak short TTS summaries when Cla
 - Notification hook speaks with `priority=True`: it kills the plugin's own running `say` (PID checked against process name — never other apps' `say`). The Stop hook stays silent while a previous speech is playing or <2 s old
 - Stop hook only speaks when a `<!-- TTS: -->` tag exists — silence means Claude stopped for a permission prompt, and the notification hook handles that
 - Phonetic replacement is whole-word, longest-match-first (so `deployed` doesn't get mangled by the `deploy` entry)
+- `speak()` honors `"enabled": false` (mute) and `"quiet_hours"` (`{"start","end"}`, may wrap past midnight; malformed config fails open — speech stays on). `force=True` bypasses both (used only by speak_cli)
+
+## Tests & lint
+
+`tests/` (pytest) covers tag extraction, sanitizer, speak() dedup/priority, mute, quiet hours and the hook message catalogs; `conftest.py` redirects all `~/.claude` paths into tmp and fakes `subprocess.Popen`, so tests never speak or touch real config. Ruff config in `pyproject.toml`. Run locally:
+
+```bash
+uvx --with pytest pytest tests/ -q
+uvx ruff check .
+```
+
+Both run in CI (`.github/workflows/test.yml`) on every push and PR.
 
 ## CI/CD
 

@@ -1,0 +1,14 @@
+# Tooling config only — the plugin itself is plain stdlib Python, not a package.
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = [
+    "E402",  # hooks insert their own dir into sys.path before imports
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

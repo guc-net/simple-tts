@@ -7,13 +7,13 @@ Spoken phrases follow the configured language; permission requests mention
 the tool involved when the notification message names one.
 """
 
-import sys
-import os
 import json
+import os
 import re
+import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
-from tts_utils import speak, read_hook_input, load_config, language_code
+from tts_utils import language_code, load_config, read_hook_input, speak
 
 DEBUG_LOG = os.path.expanduser("~/.claude/simple-tts-notification-debug.log")
 DEBUG_MAX_LINES = 200
@@ -57,7 +57,7 @@ def debug(input_data, enabled):
         return
     try:
         try:
-            with open(DEBUG_LOG, 'r') as f:
+            with open(DEBUG_LOG) as f:
                 lines = f.readlines()[-(DEBUG_MAX_LINES - 1):]
         except FileNotFoundError:
             lines = []

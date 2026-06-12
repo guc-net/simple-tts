@@ -15,7 +15,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'hooks'))
-from tts_utils import speak, load_config
+from tts_utils import load_config, speak
 
 PROTOCOL_VERSION = "2025-06-18"
 

@@ -76,6 +76,8 @@ Run `say -v '?'` to see all voices on your system. The setup wizard will show vo
 | Command | Description |
 |---------|-------------|
 | `/simple-tts-setup` | Interactive setup / reconfigure / uninstall |
+| `/tts on` / `/tts off` | Unmute / mute speech without uninstalling |
+| `/tts status` | Show current config (enabled, voice, quiet hours) |
 
 ## Configuration
 
@@ -96,9 +98,17 @@ Optional keys:
 | Key | Effect |
 |-----|--------|
 | `"fallback_message"` | Phrase spoken when a response has no TTS tag (default: silence) |
+| `"enabled"` | `false` mutes all speech; toggled by `/tts on\|off` (missing = enabled) |
+| `"quiet_hours"` | `{"start": "22:00", "end": "07:00"}` — no speech inside this window (may wrap past midnight) |
 | `"debug"` | `true` logs notification payloads to `~/.claude/simple-tts-notification-debug.log` (trimmed to 200 lines) |
 
 Deleting the config file silences the plugin without uninstalling it.
+
+To test your configuration and pronunciations from a terminal (speaks even when muted or in quiet hours):
+
+```bash
+python3 hooks/speak_cli.py "deployed to production"
+```
 
 ## Phonetic sanitization
 
@@ -153,6 +163,14 @@ Version 2.0 registers hooks via the plugin itself and injects the TTS instructio
 
 ```bash
 claude --plugin-dir ./simple-tts
+```
+
+Tests and lint (run in CI on every push and PR):
+
+```bash
+pip install pytest ruff   # or use uvx
+pytest tests/ -q
+ruff check .
 ```
 
 ## License

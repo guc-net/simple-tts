@@ -6,12 +6,12 @@ Only speaks if a TTS tag is found — stays silent when Claude stops
 for permission prompts (notification hook handles those).
 """
 
-import sys
 import os
 import re
+import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
-from tts_utils import extract_tts_from_transcript, speak, read_hook_input, load_config
+from tts_utils import extract_tts_from_transcript, load_config, read_hook_input, speak
 
 
 def extract_tts_from_message(message):
