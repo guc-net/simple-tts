@@ -38,3 +38,31 @@ class TestBuildInstruction:
     def test_mentions_mcp_tool_prohibition(self):
         text = build_instruction({"language": "English", "voice": "Daniel"})
         assert "speak" in text and "MCP" in text
+
+    def test_default_is_tag_mode(self):
+        text = build_instruction({"language": "Polish", "voice": "Krzysztof"})
+        assert "<!-- TTS:" in text
+
+
+class TestToolMode:
+    def _cfg(self, **kw):
+        return {"language": "Polish", "voice": "Krzysztof", "speak_via": "tool", **kw}
+
+    def test_tool_mode_calls_speak_tool(self):
+        text = build_instruction(self._cfg())
+        assert "mcp__plugin_simple-tts_simple-tts__speak" in text
+
+    def test_tool_mode_emits_no_tag(self):
+        text = build_instruction(self._cfg())
+        assert "<!-- TTS:" not in text or "Do NOT write any `<!-- TTS:" in text
+        # the only mention of the tag must be the prohibition, never an instruction to emit it
+        assert "Add `<!-- TTS:" not in text
+
+    def test_tool_mode_keeps_content_rules(self):
+        text = build_instruction(self._cfg())
+        assert "Max 10 words" in text
+        assert "zrobiłem" in text  # gender forms still applied
+
+    def test_tool_mode_mentions_toolsearch(self):
+        text = build_instruction(self._cfg())
+        assert "ToolSearch" in text

@@ -34,8 +34,10 @@ To update:
 
 ## How it works
 
-1. A **SessionStart** hook injects an instruction telling Claude to include a hidden `<!-- TTS: short summary -->` tag at the end of each response — generated from your config (language, voice gender for grammar forms, name), so changing the config changes the instruction immediately
-2. When Claude **stops**, a hook extracts the tag and speaks it via macOS `say` (detached — never delays Claude)
+1. A **SessionStart** hook injects an instruction telling Claude how to deliver a short summary at the end of each response — generated from your config (language, voice gender for grammar forms, name, delivery mechanism), so changing the config changes the instruction immediately
+2. Claude delivers the summary one of two ways (`speak_via` in config):
+   - **`tag`** (default): Claude appends a hidden `<!-- TTS: short summary -->` comment; when Claude **stops**, a hook extracts and speaks it via macOS `say` (detached — never delays Claude). Zero latency, but the comment is *visible* in CLI versions that render HTML comments.
+   - **`tool`**: Claude calls the bundled `speak` MCP tool instead. Nothing appears in the reply (only a collapsed tool-use line), and the same mechanism works in Cowork and the desktop app. Costs one extra model turn per response.
 3. When Claude **needs your attention** (permission prompt, waiting for input), a notification hook speaks a short phrase in your configured language, naming the tool when known (*"Potrzebuję zgody na narzędzie Bash"*)
 4. Foreign terms are automatically sanitized for the chosen voice — acronyms get spelled out (`API` → `A P I`), common English words get phonetic equivalents
 
@@ -97,7 +99,8 @@ Optional keys:
 
 | Key | Effect |
 |-----|--------|
-| `"fallback_message"` | Phrase spoken when a response has no TTS tag (default: silence) |
+| `"speak_via"` | `"tag"` (default) or `"tool"` — how Claude delivers the summary (see *How it works*) |
+| `"fallback_message"` | Phrase spoken when a response has no TTS tag (tag mode only; default: silence) |
 | `"enabled"` | `false` mutes all speech; toggled by `/tts on\|off` (missing = enabled) |
 | `"quiet_hours"` | `{"start": "22:00", "end": "07:00"}` — no speech inside this window (may wrap past midnight) |
 | `"debug"` | `true` logs notification payloads to `~/.claude/simple-tts-notification-debug.log` (trimmed to 200 lines) |
@@ -153,7 +156,7 @@ Hooks only fire in the Claude Code CLI, so the plugin also ships an MCP server (
   The `find` indirection always launches the latest installed plugin version. For more reliable end-of-response speech in chat, add to your Claude preferences: *"At the end of each response, call the simple-tts speak tool with a short summary."*
 - **claude.ai in the browser** — not supported: web chat can only use remote connectors and cannot run local commands.
 
-In Claude Code itself the `speak` tool is unnecessary — the session instruction tells Claude to use the TTS tag and never call the tool there, so they don't double-speak.
+In Claude Code, whether the `speak` tool is used depends on `speak_via`: in `tag` mode the session instruction tells Claude to use the comment and never call the tool (so they don't double-speak); in `tool` mode Claude calls it directly and emits no comment. If you dislike seeing the `<!-- TTS: -->` comment in your terminal, switch to `tool` mode via `/simple-tts-setup`.
 
 ## Upgrading from 1.x
 

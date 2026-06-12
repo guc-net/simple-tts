@@ -29,9 +29,9 @@ SPEAK_TOOL = {
         "how they know to come back. Max 10 words, natural spoken language, "
         "in the user's configured TTS language, specific to what happened — "
         "never generic. Avoid acronyms and foreign jargon; describe instead. "
-        "EXCEPTION: do not call this tool in Claude Code CLI sessions where "
-        "you were instructed to emit <!-- TTS: --> tags — the tag mechanism "
-        "already speaks there."
+        "Only call when your session instructions tell you to use this tool: "
+        "in tag mode the <!-- TTS: --> comment already speaks, so calling here "
+        "would double-speak."
     ),
     "inputSchema": {
         "type": "object",

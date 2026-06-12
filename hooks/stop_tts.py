@@ -27,6 +27,11 @@ def main():
     if config is None:
         sys.exit(0)
 
+    # In "tool" mode the model speaks via the speak MCP tool, so the Stop hook
+    # has nothing to do (and must stay silent to avoid double speech).
+    if config.get('speak_via', 'tag') == 'tool':
+        sys.exit(0)
+
     input_data = read_hook_input()
 
     if input_data.get('stop_hook_active'):

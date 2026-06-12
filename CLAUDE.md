@@ -10,13 +10,13 @@ A Claude Code plugin that uses macOS `say` to speak short TTS summaries when Cla
 
 - **hooks/hooks.json** — auto-registers all hooks via `${CLAUDE_PLUGIN_ROOT}` when the plugin is enabled; no settings.json edits, no file copying
 - **hooks/tts_utils.py** — shared module: config loading (`~/.claude/simple-tts-config.json`), phonetic sanitization, non-blocking `speak()`, transcript TTS tag extraction. Speech state (PID + timestamp of the running `say`) lives in `~/.claude/simple-tts-state.json` under `flock`
-- **hooks/stop_tts.py** — Stop hook: extracts `<!-- TTS: message -->` from `last_assistant_message` (preferred) or transcript fallback. No tag → silence (or `fallback_message` from config)
+- **hooks/stop_tts.py** — Stop hook (tag mode only): extracts `<!-- TTS: message -->` from `last_assistant_message` (preferred) or transcript fallback. No tag → silence (or `fallback_message` from config). Exits immediately when `speak_via == "tool"`
 - **hooks/notification_tts.py** — Notification hook: speaks a short phrase in the configured language (`MESSAGES` catalog), naming the tool from permission messages when possible. Never reads transcript (avoids repeating stale messages)
-- **hooks/session_start.py** — SessionStart hook: injects the TTS-tag instruction as `additionalContext`, generated from config (language, voice gender → grammar forms, name). Replaces the old CLAUDE.md-append approach
+- **hooks/session_start.py** — SessionStart hook: injects the TTS instruction as `additionalContext`, generated from config (language, voice gender → grammar forms, name). Two variants by `speak_via`: `tag` (append a hidden `<!-- TTS: -->` comment) or `tool` (call the `speak` MCP tool, no visible marker). Shared content rules via `content_rules()`. Replaces the old CLAUDE.md-append approach
 - **hooks/phonetics/<lang>.json** — phonetic dictionaries (English term → phonetic spelling); user overrides merge in from `~/.claude/simple-tts-phonetics.json`
 - **hooks/speak_cli.py** — manual test mode: `python3 hooks/speak_cli.py "text"` speaks through the full pipeline, bypassing mute and quiet hours (`force=True`)
 - **skills/tts/SKILL.md** — `/tts on|off|status`: toggles `"enabled"` in the config (mute without uninstalling)
-- **mcp/server.py** + **.mcp.json** — stdlib-only MCP stdio server with a `speak` tool, for environments without hooks (Cowork, desktop chat). Reuses `tts_utils.speak()`; the SessionStart instruction forbids calling it in Claude Code (tag handles speech there)
+- **mcp/server.py** + **.mcp.json** — stdlib-only MCP stdio server with a `speak` tool, for environments without hooks (Cowork, desktop chat) and for Claude Code `tool` mode. Reuses `tts_utils.speak()` (so mute + quiet hours apply); when to call it is governed by the SessionStart instruction, not the tool description
 - **skills/simple-tts-setup/SKILL.md** — setup wizard (`/simple-tts-setup`): writes the config file, handles uninstall and migration from pre-2.0 installs
 - **.claude-plugin/plugin.json** — plugin manifest (version auto-bumped by CI)
 
