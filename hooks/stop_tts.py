@@ -11,7 +11,7 @@ import os
 import re
 
 sys.path.insert(0, os.path.dirname(__file__))
-from tts_utils import extract_tts_from_transcript, speak, read_hook_input
+from tts_utils import extract_tts_from_transcript, speak, read_hook_input, load_config
 
 
 def extract_tts_from_message(message):
@@ -23,6 +23,10 @@ def extract_tts_from_message(message):
 
 
 def main():
+    config = load_config()
+    if config is None:
+        sys.exit(0)
+
     input_data = read_hook_input()
 
     if input_data.get('stop_hook_active'):
@@ -37,9 +41,12 @@ def main():
         if transcript_path:
             tts_text = extract_tts_from_transcript(transcript_path)
 
-    # Only speak if we found a TTS tag.
-    # If no tag: Claude likely stopped for a permission prompt,
-    # and the notification hook will handle speaking.
+    # No tag found: Claude likely stopped for a permission prompt (the
+    # notification hook handles those), so default to silence — unless the
+    # user configured a fallback message ("fallback_message" in config).
+    if not tts_text:
+        tts_text = config.get('fallback_message')
+
     if tts_text:
         speak(tts_text)
 

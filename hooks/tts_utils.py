@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Shared TTS utilities for Claude Code simple-tts plugin (usterk/simple-tts)"""
 
+import fcntl
 import json
 import os
 import re
@@ -11,23 +12,46 @@ import time
 
 # Config file location
 CONFIG_PATH = os.path.expanduser("~/.claude/simple-tts-config.json")
+STATE_PATH = os.path.expanduser("~/.claude/simple-tts-state.json")
+USER_PHONETICS_PATH = os.path.expanduser("~/.claude/simple-tts-phonetics.json")
+PHONETICS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "phonetics")
 
 DEFAULT_CONFIG = {
     "voice": "Krzysztof",
     "rate": 220,
+    "language": "Polish",
     "name": "",
     "name_chance": 0.3,
 }
 
+# Map of language names (as stored by the setup skill) to phonetic dict codes
+LANGUAGE_CODES = {
+    "polish": "pl",
+    "english": "en",
+    "german": "de",
+    "french": "fr",
+    "spanish": "es",
+    "italian": "it",
+}
+
 
 def load_config():
-    """Load plugin config, returning defaults if not found."""
+    """Load plugin config. Returns None when the plugin is not configured —
+    callers must stay silent in that case (plugin enabled but setup not run)."""
     try:
         with open(CONFIG_PATH, 'r') as f:
             stored = json.load(f)
         return {**DEFAULT_CONFIG, **stored}
     except (FileNotFoundError, json.JSONDecodeError):
-        return DEFAULT_CONFIG.copy()
+        return None
+
+
+def language_code(config):
+    """Resolve the configured language to a two-letter code."""
+    lang = str(config.get('language', 'Polish')).strip().lower()
+    if len(lang) == 2:
+        return lang
+    return LANGUAGE_CODES.get(lang, 'en')
 
 
 def extract_tts_from_transcript(transcript_path, search_lines=50):
@@ -60,65 +84,36 @@ def extract_tts_from_transcript(transcript_path, search_lines=50):
         return None
 
 
-def sanitize_for_polish_tts(text):
-    """
-    Make text pronounceable by Polish TTS voice.
-    - ALL-CAPS words (2+ letters) get spelled out: "API" -> "A P I"
-    - Common English terms get Polish phonetic equivalents
-    """
-    phonetic = {
-        # Dev tools & platforms
-        'cache': 'kesz',
-        'docker': 'doker',
-        'kubernetes': 'kubernetis',
-        'nginx': 'en-gin-iks',
-        'github': 'githab',
-        'webpack': 'łebpak',
-        'README': 'ridmi',
-        'readme': 'ridmi',
-        # Actions & concepts
-        'deploy': 'deploj',
-        'deployed': 'deplojd',
-        'commit': 'komit',
-        'committed': 'zakomitowany',
-        'push': 'pusz',
-        'pushed': 'wypuszony',
-        'merge': 'merdż',
-        'merged': 'zmerdżowany',
-        'fetch': 'fecz',
-        'checkout': 'czekałt',
-        'rebase': 'ribejs',
-        'rollback': 'rolbak',
-        'refactor': 'refaktor',
-        'build': 'bild',
-        'release': 'rilis',
-        # Architecture terms
-        'queue': 'kju',
-        'vue': 'wju',
-        'node': 'nołd',
-        'pipeline': 'pajplajn',
-        'middleware': 'midłer',
-        'endpoint': 'endpojnt',
-        'runtime': 'rantajm',
-        'webhook': 'łebhuk',
-        'framework': 'frejmłork',
-        'frontend': 'frontendł',
-        'backend': 'bakend',
-        'database': 'databejs',
-        'cluster': 'klaster',
-        'container': 'kontener',
-        'microservice': 'mikroserwis',
-        'repository': 'repozytorium',
-        'branch': 'brancz',
-        'pull request': 'pul rekłest',
-        'code review': 'kod rewju',
-        'worktree': 'łork-tri',
-        'linter': 'linter',
-        'debugger': 'debuger',
-    }
+def load_phonetics(lang_code):
+    """Load the built-in phonetic dict for a language, merged with the
+    user's overrides from ~/.claude/simple-tts-phonetics.json (user wins)."""
+    phonetic = {}
+    builtin = os.path.join(PHONETICS_DIR, f"{lang_code}.json")
+    for path in (builtin, USER_PHONETICS_PATH):
+        try:
+            with open(path, 'r') as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                phonetic.update(data)
+        except (FileNotFoundError, json.JSONDecodeError):
+            continue
+    return phonetic
 
-    for eng, pol in phonetic.items():
-        text = re.sub(re.escape(eng), pol, text, flags=re.IGNORECASE)
+
+def sanitize_for_tts(text, lang_code='pl'):
+    """
+    Make text pronounceable by a non-English TTS voice.
+    - Phonetic replacements (whole words only, longest match first)
+    - ALL-CAPS words (2+ letters) get spelled out: "API" -> "A P I"
+    """
+    phonetic = load_phonetics(lang_code)
+    if phonetic:
+        # Single alternation, longest keys first, so 'deployed' wins over 'deploy'
+        keys = sorted(phonetic.keys(), key=len, reverse=True)
+        pattern = r'\b(?:' + '|'.join(re.escape(k) for k in keys) + r')\b'
+        lookup = {k.lower(): v for k, v in phonetic.items()}
+        text = re.sub(pattern, lambda m: lookup[m.group(0).lower()], text,
+                      flags=re.IGNORECASE)
 
     # Spell out ALL-CAPS words (2+ letters)
     def spell_caps(m):
@@ -128,45 +123,74 @@ def sanitize_for_polish_tts(text):
     return text
 
 
-LOCK_FILE = os.path.expanduser("~/.claude/simple-tts-last-speak")
+def _locked_state(fn):
+    """Run fn(state) -> new_state under an exclusive flock on the state file.
+    Returns the state fn saw. State is {"pid": int, "ts": float} or {}."""
+    with open(STATE_PATH, 'a+') as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        f.seek(0)
+        try:
+            state = json.load(f)
+        except (json.JSONDecodeError, ValueError):
+            state = {}
+        new_state = fn(state)
+        if new_state is not None:
+            f.seek(0)
+            f.truncate()
+            json.dump(new_state, f)
+        return state
 
 
-def _recently_spoken(max_age=2.0):
-    """Check if another hook spoke within the last max_age seconds."""
+def _is_our_say(pid):
+    """True if pid is alive and is a `say` process (so we never kill
+    someone else's process after PID reuse)."""
     try:
-        mtime = os.path.getmtime(LOCK_FILE)
-        return (time.time() - mtime) < max_age
+        os.kill(pid, 0)
+    except (OSError, TypeError):
+        return False
+    try:
+        out = subprocess.run(['ps', '-p', str(pid), '-o', 'comm='],
+                             capture_output=True, text=True)
+        return out.stdout.strip().endswith('say')
     except OSError:
         return False
 
 
-def _mark_spoken():
-    """Mark that we just spoke (touch lock file)."""
-    try:
-        with open(LOCK_FILE, 'w') as f:
-            f.write(str(time.time()))
-    except OSError:
-        pass
-
-
 def speak(text, priority=False):
     """
-    Speak text using macOS say command with configured voice.
-    Sanitizes English terms and optionally prepends user's name.
+    Speak text using macOS say with the configured voice. Non-blocking:
+    `say` is detached and the hook returns immediately.
 
-    priority=True (notification hook): kills any running say, always speaks.
-    priority=False (stop hook): stays silent if notification just spoke.
+    priority=True (notification hook): kills our running say (if any), always speaks.
+    priority=False (stop hook): stays silent while a previous say is still
+    playing or finished less than 2 seconds ago.
+
+    Silent no-op when the plugin is not configured.
     """
-    # Debounce: if notification just spoke, stop hook should stay silent
-    if not priority and _recently_spoken():
+    config = load_config()
+    if config is None:
         return
 
-    # Priority speaker kills any overlapping say process
-    if priority:
-        subprocess.run(['pkill', '-x', 'say'], capture_output=True)
+    def check_and_kill(state):
+        pid, ts = state.get('pid'), state.get('ts', 0)
+        if priority:
+            if pid and _is_our_say(pid):
+                try:
+                    os.kill(pid, 15)
+                except OSError:
+                    pass
+            return None
+        # Non-priority: bail out if still speaking or just finished
+        if (pid and _is_our_say(pid)) or (time.time() - ts) < 2.0:
+            raise _StillSpeaking()
+        return None
 
-    config = load_config()
-    text = sanitize_for_polish_tts(text)
+    try:
+        _locked_state(check_and_kill)
+    except _StillSpeaking:
+        return
+
+    text = sanitize_for_tts(text, language_code(config))
 
     name = config.get('name', '')
     if name and random.random() < config.get('name_chance', 0.3):
@@ -176,11 +200,16 @@ def speak(text, priority=False):
     voice = config.get('voice', 'Krzysztof')
     rate = str(config.get('rate', 220))
 
-    _mark_spoken()
     try:
-        subprocess.run(['say', '-v', voice, '-r', rate, text], check=True)
-    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        proc = subprocess.Popen(['say', '-v', voice, '-r', rate, text],
+                                start_new_session=True)
+        _locked_state(lambda state: {"pid": proc.pid, "ts": time.time()})
+    except (OSError, FileNotFoundError) as e:
         print(f"TTS error: {e}", file=sys.stderr)
+
+
+class _StillSpeaking(Exception):
+    pass
 
 
 def read_hook_input():
