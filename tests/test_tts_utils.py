@@ -109,6 +109,16 @@ class TestSanitizer:
     def test_unknown_language_only_spells_caps(self, isolated_paths):
         assert sanitize_for_tts("deployed JSON", "xx") == "deployed J S O N"
 
+    def test_clock_time_spelled_to_words_pl(self, isolated_paths):
+        # '14:02' must not reach `say` raw (it expands to 'czternasta i dwie minuty')
+        assert sanitize_for_tts("Jest 14:02", "pl") == "Jest czternasta zero dwie"
+        assert sanitize_for_tts("o 9:05", "pl") == "o dziewiąta zero pięć"
+        assert sanitize_for_tts("14:00 lunch", "pl") == "czternasta lunch"
+        assert sanitize_for_tts("23:59", "pl") == "dwudziesta trzecia pięćdziesiąt dziewięć"
+
+    def test_clock_time_untouched_for_other_languages(self, isolated_paths):
+        assert sanitize_for_tts("at 14:02", "xx") == "at 14:02"
+
 
 class TestSpeak:
     def test_unconfigured_is_silent(self, isolated_paths, fake_say):

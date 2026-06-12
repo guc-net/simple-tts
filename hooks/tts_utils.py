@@ -101,12 +101,59 @@ def load_phonetics(lang_code):
     return phonetic
 
 
+# Polish spoken-time tables (feminine ordinals for hours, feminine cardinals
+# for minutes, matching how clock times are read aloud in Polish).
+_PL_HOURS = {
+    0: "północ", 1: "pierwsza", 2: "druga", 3: "trzecia", 4: "czwarta",
+    5: "piąta", 6: "szósta", 7: "siódma", 8: "ósma", 9: "dziewiąta",
+    10: "dziesiąta", 11: "jedenasta", 12: "dwunasta", 13: "trzynasta",
+    14: "czternasta", 15: "piętnasta", 16: "szesnasta", 17: "siedemnasta",
+    18: "osiemnasta", 19: "dziewiętnasta", 20: "dwudziesta",
+    21: "dwudziesta pierwsza", 22: "dwudziesta druga", 23: "dwudziesta trzecia",
+}
+_PL_ONES = ["", "jedna", "dwie", "trzy", "cztery", "pięć", "sześć", "siedem",
+            "osiem", "dziewięć"]
+_PL_TEENS = ["dziesięć", "jedenaście", "dwanaście", "trzynaście", "czternaście",
+             "piętnaście", "szesnaście", "siedemnaście", "osiemnaście",
+             "dziewiętnaście"]
+_PL_TENS = {2: "dwadzieścia", 3: "trzydzieści", 4: "czterdzieści", 5: "pięćdziesiąt"}
+
+
+def _pl_minutes(m):
+    if m == 0:
+        return ""
+    if m < 10:
+        return "zero " + _PL_ONES[m]
+    if m < 20:
+        return _PL_TEENS[m - 10]
+    tens, ones = divmod(m, 10)
+    return _PL_TENS[tens] + ("" if ones == 0 else " " + _PL_ONES[ones])
+
+
+def normalize_times_pl(text):
+    """Rewrite HH:MM clock times into spoken Polish words so macOS `say`
+    doesn't expand e.g. '14:02' into the clumsy 'czternasta i dwie minuty'."""
+    def repl(m):
+        hour, minute = int(m.group(1)), int(m.group(2))
+        if hour > 23:
+            return m.group(0)
+        words = _PL_HOURS[hour]
+        mins = _pl_minutes(minute)
+        return f"{words} {mins}".strip()
+
+    return re.sub(r'\b(\d{1,2}):([0-5]\d)\b', repl, text)
+
+
 def sanitize_for_tts(text, lang_code='pl'):
     """
     Make text pronounceable by a non-English TTS voice.
+    - Clock times (Polish) get spelled out as words: "14:02" -> "czternasta zero dwie"
     - Phonetic replacements (whole words only, longest match first)
     - ALL-CAPS words (2+ letters) get spelled out: "API" -> "A P I"
     """
+    if lang_code == 'pl':
+        text = normalize_times_pl(text)
+
     phonetic = load_phonetics(lang_code)
     if phonetic:
         # Single alternation, longest keys first, so 'deployed' wins over 'deploy'
