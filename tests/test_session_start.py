@@ -79,3 +79,11 @@ class TestToolMode:
     def test_tool_mode_mentions_toolsearch(self):
         text = build_instruction(self._cfg())
         assert "ToolSearch" in text
+
+    def test_tool_mode_demands_single_block_no_prose(self):
+        # The instruction must forbid splitting the answer across messages and
+        # forbid prose alongside the speak call — that was the multi-bubble bug.
+        text = build_instruction(self._cfg())
+        assert "ONE block" in text
+        assert "NO accompanying prose" in text
+        assert "silently" in text  # the ToolSearch step must not emit text

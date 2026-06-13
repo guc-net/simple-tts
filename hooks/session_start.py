@@ -131,6 +131,14 @@ def build_tool_instruction(config):
         " then call that exact name. It stays loaded for the rest of the session.",
         "  - Do NOT write any `<!-- TTS: ... -->` tag or put this summary in your visible reply —"
         " the tool speaks it, and a visible marker is exactly what we are avoiding here.",
+        "  - Write your complete answer to the user as ONE block of text — never split it"
+        " across several messages or restate it. Each separate chunk of prose shows as its"
+        " own bubble in the CLI, so one answer must be one bubble.",
+        "  - The `speak` call is your final action and carries NO accompanying prose: do not"
+        " greet, summarise, or repeat any of your answer in the same turn as the call —"
+        " just make the call.",
+        "  - If you must run ToolSearch to load `speak`, do it silently — emit no text in that"
+        " turn (ToolSearch, then the `speak` call), so it does not add an extra bubble.",
     ]
     lines += content_rules(config)
     return '\n'.join(lines)
