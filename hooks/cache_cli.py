@@ -40,7 +40,12 @@ def _when(ts):
         return "?"
 
 
-def cmd_stats():
+def _trim(text, width=60):
+    text = text or "(brak metadanych)"
+    return text if len(text) <= width else text[:width - 1] + "…"
+
+
+def cmd_stats(top_n=5):
     data = ac.stats()
     limit = _max_mb()
     print(f"simple-tts audio cache — {data['count']} wpisów, "
@@ -49,13 +54,20 @@ def cmd_stats():
     if not data["entries"]:
         print("(pusty)")
         return
-    print(f"\n{'odtw.':>6}  {'ostatnio':16}  {'rozmiar':>8}  tekst")
+
+    # Always surface the most-played phrases (entries are already plays-desc).
+    popular = [e for e in data["entries"] if e["plays"] > 0][:top_n]
+    print("\n🔝 Najpopularniejsze zdania:")
+    if popular:
+        for e in popular:
+            print(f"  {e['plays']:>4}×  {_trim(e['text'])}")
+    else:
+        print("  (jeszcze nic nie odtworzono więcej niż raz)")
+
+    print(f"\nWszystkie wpisy:\n{'odtw.':>6}  {'ostatnio':16}  {'rozmiar':>8}  tekst")
     for e in data["entries"]:
-        text = e["text"] or "(brak metadanych)"
-        if len(text) > 60:
-            text = text[:57] + "…"
         print(f"{e['plays']:>6}  {_when(e['last_used']):16}  "
-              f"{_human(e['size']):>8}  {text}")
+              f"{_human(e['size']):>8}  {_trim(e['text'])}")
 
 
 def cmd_prune(max_mb):

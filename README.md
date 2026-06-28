@@ -86,9 +86,12 @@ Run `say -v '?'` to see all voices on your system. The setup wizard will show vo
 
 | Command | Description |
 |---------|-------------|
-| `/simple-tts-setup` | Interactive setup / reconfigure / uninstall |
-| `/tts on` / `/tts off` | Unmute / mute speech without uninstalling |
-| `/tts status` | Show current config (enabled, voice, quiet hours) |
+| `/simple-tts:simple-tts-setup` | Interactive setup / reconfigure / uninstall |
+| `/simple-tts:tts on` / `… off` | Unmute / mute speech without uninstalling |
+| `/simple-tts:tts status` | Show current config (enabled, voice, quiet hours) |
+| `/simple-tts:tts cache [stats\|prune\|clear]` | Audio cache: stats (most-played first), prune to budget, or clear |
+
+> Plugin commands are namespaced as `/simple-tts:…`. For a bare `/tts`, add a personal `~/.claude/commands/tts.md` wrapper.
 
 ## Configuration
 
@@ -110,8 +113,10 @@ Optional keys:
 |-----|--------|
 | `"speak_via"` | `"tag"` (default) or `"tool"` — how Claude delivers the summary (see *How it works*) |
 | `"fallback_message"` | Phrase spoken when a response has no TTS tag (tag mode only; default: silence) |
-| `"enabled"` | `false` mutes all speech; toggled by `/tts on\|off` (missing = enabled) |
+| `"enabled"` | `false` mutes all speech; toggled by `/simple-tts:tts on\|off` (missing = enabled) |
 | `"quiet_hours"` | `{"start": "22:00", "end": "07:00"}` — no speech inside this window (may wrap past midnight) |
+| `"tag_display"` | tag mode only: `"styled"` (default, green 🔊 line) / `"plain"` (🔊, no ANSI) / `"hidden"` (remove the marker) |
+| `"cache_max_mb"` | size budget for the edge audio cache (default `100`); least-used-then-oldest entries are evicted past it |
 | `"debug"` | `true` logs notification payloads to `~/.claude/simple-tts-notification-debug.log` (trimmed to 200 lines) |
 
 Deleting the config file silences the plugin without uninstalling it.

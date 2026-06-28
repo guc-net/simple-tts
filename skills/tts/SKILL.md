@@ -1,11 +1,13 @@
 ---
-description: "Mute or unmute simple-tts speech and manage the audio cache. Usage: /tts on, /tts off, /tts status, /tts cache [stats|prune|clear]."
+description: "Mute or unmute simple-tts speech and manage the audio cache. Usage: /simple-tts:tts on|off|status|cache [stats|prune|clear]."
 user_invocable: true
 ---
 
 # TTS on/off
 
-Toggle simple-tts speech via the `enabled` flag in `~/.claude/simple-tts-config.json`. The hooks stay registered; `"enabled": false` just makes them silent. No argument or anything other than `on`/`off` means **status**.
+Plugin skills are namespaced, so this is invoked as **`/simple-tts:tts`** (e.g. `/simple-tts:tts cache stats`). A bare `/tts` is only possible via a personal `~/.claude/commands/tts.md` wrapper.
+
+Toggle simple-tts speech via the `enabled` flag in `~/.claude/simple-tts-config.json`. The hooks stay registered; `"enabled": false` just makes them silent. No argument or anything other than `on`/`off`/`cache` means **status**.
 
 If `~/.claude/simple-tts-config.json` does not exist, stop and tell the user to run `/simple-tts-setup` first.
 
