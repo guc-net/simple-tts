@@ -42,14 +42,25 @@ class FakeProc:
         self.pid = pid
 
 
+class CallList(list):
+    """A list of argv lists (so existing `==`/`[]`/`len` assertions keep
+    working) that also records the `env` kwarg of each Popen call alongside,
+    in `.envs`, for the edge-tts payload assertions."""
+
+    envs = None
+
+
 @pytest.fixture
 def fake_say(monkeypatch):
     """Replace subprocess.Popen inside tts_utils with a recorder.
-    Returns the list of argv lists passed to Popen."""
-    calls = []
+    Returns the list of argv lists passed to Popen; `.envs[i]` holds the
+    `env` kwarg of call i (None when not passed)."""
+    calls = CallList()
+    calls.envs = []
 
     def fake_popen(args, **kwargs):
         calls.append(args)
+        calls.envs.append(kwargs.get("env"))
         return FakeProc()
 
     monkeypatch.setattr(tts_utils.subprocess, "Popen", fake_popen)

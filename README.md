@@ -1,10 +1,12 @@
 # simple-tts
 
-A [Claude Code](https://claude.ai/code) plugin that speaks short contextual summaries using macOS text-to-speech when Claude finishes a task or needs your attention.
+A [Claude Code](https://claude.ai/code) plugin that speaks short contextual summaries with text-to-speech when Claude finishes a task or needs your attention.
 
 Instead of switching to your terminal to check what Claude did, you just hear it: *"Fixed the auth module as requested"* or *"Need your approval to run migration"*.
 
-> **Requires macOS** — uses the built-in `say` command.
+By default it uses **Microsoft edge-tts** neural voices (high quality, online — run on demand via [`uv`](https://github.com/astral-sh/uv)'s `uvx`, nothing to install) and automatically falls back to the built-in macOS `say` voice when offline. You can switch to `say`-only in the setup wizard.
+
+> **Requires macOS** — the offline fallback uses the built-in `say` command. The edge engine additionally needs internet and `uvx` on your `PATH`.
 
 ## Installation
 
@@ -40,6 +42,13 @@ To update:
    - **`tool`**: Claude calls the bundled `speak` MCP tool instead. Nothing appears in the reply (only a collapsed tool-use line), and the same mechanism works in Cowork and the desktop app. Costs one extra model turn per response.
 3. When Claude **needs your attention** (permission prompt, waiting for input), a notification hook speaks a short phrase in your configured language, naming the tool when known (*"Potrzebuję zgody na narzędzie Bash"*)
 4. Foreign terms are automatically sanitized for the chosen voice — acronyms get spelled out (`API` → `A P I`), common English words get phonetic equivalents
+
+### Speech engine (`engine` in config)
+
+- **`edge`** (default): Microsoft edge-tts neural voices, synthesized out-of-process via `uvx edge-tts` and played with `afplay`. The neural voice is chosen automatically from your local voice's gender and language (e.g. Krzysztof → `pl-PL-MarekNeural`, Ewa → `pl-PL-ZofiaNeural`). On any failure — offline, no `uvx`, timeout — it falls back to your local `say` voice for that utterance. Short summaries are sent to Microsoft's servers for synthesis. Tune speed with `edge_rate` (e.g. `"+10%"`).
+- **`say`**: local macOS voice only, fully offline. Pick this in the setup wizard if you prefer not to use an online service.
+
+Either way speech is detached and never delays Claude.
 
 ### Examples
 

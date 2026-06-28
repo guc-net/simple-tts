@@ -17,10 +17,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
-from tts_utils import load_config
-
-MALE_VOICES = {'krzysztof', 'daniel', 'thomas', 'alex', 'jorge', 'luca'}
-FEMALE_VOICES = {'ewa', 'zosia', 'samantha', 'anna', 'amélie', 'monica'}
+from tts_utils import load_config, voice_gender
 
 # The `speak` tool's fully-qualified name depends on how the MCP server was
 # loaded. Marketplace plugin install namespaces it under the plugin; a
@@ -60,13 +57,6 @@ GENDER_RULES = {
         'female': 'TTS voice is female — use feminine forms where applicable',
     },
 }
-
-
-def voice_gender(voice):
-    first = voice.strip().split()[0].lower() if voice.strip() else ''
-    if first in FEMALE_VOICES:
-        return 'female'
-    return 'male'
 
 
 def content_rules(config):

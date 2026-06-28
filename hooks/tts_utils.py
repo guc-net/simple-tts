@@ -6,6 +6,7 @@ import json
 import os
 import random
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -16,6 +17,7 @@ CONFIG_PATH = os.path.expanduser("~/.claude/simple-tts-config.json")
 STATE_PATH = os.path.expanduser("~/.claude/simple-tts-state.json")
 USER_PHONETICS_PATH = os.path.expanduser("~/.claude/simple-tts-phonetics.json")
 PHONETICS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "phonetics")
+EDGE_SPEAK_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "edge_speak.py")
 
 DEFAULT_CONFIG = {
     "voice": "Krzysztof",
@@ -23,6 +25,11 @@ DEFAULT_CONFIG = {
     "language": "Polish",
     "name": "",
     "name_chance": 0.3,
+    # Speech engine: "edge" = Microsoft edge-tts (online, neural, high quality),
+    # falling back to macOS `say` on any failure; "say" = local `say` only.
+    "engine": "edge",
+    # edge-tts speed as a percentage offset from normal (e.g. "+0%", "-10%").
+    "edge_rate": "+0%",
 }
 
 # Map of language names (as stored by the setup skill) to phonetic dict codes
@@ -34,6 +41,40 @@ LANGUAGE_CODES = {
     "spanish": "es",
     "italian": "it",
 }
+
+# Voice first-names grouped by gender — used both to pick masculine/feminine
+# grammar forms (session_start) and to choose the matching edge-tts voice.
+MALE_VOICES = {'krzysztof', 'daniel', 'thomas', 'alex', 'jorge', 'luca'}
+FEMALE_VOICES = {'ewa', 'zosia', 'samantha', 'anna', 'amélie', 'monica'}
+
+# edge-tts neural voices per language code and gender. A language with no
+# entry has no edge voice → speak() falls back to the local `say` engine.
+EDGE_VOICES = {
+    'pl': {'male': 'pl-PL-MarekNeural', 'female': 'pl-PL-ZofiaNeural'},
+    'en': {'male': 'en-US-GuyNeural', 'female': 'en-US-AriaNeural'},
+    'de': {'male': 'de-DE-ConradNeural', 'female': 'de-DE-KatjaNeural'},
+    'fr': {'male': 'fr-FR-HenriNeural', 'female': 'fr-FR-DeniseNeural'},
+    'es': {'male': 'es-ES-AlvaroNeural', 'female': 'es-ES-ElviraNeural'},
+    'it': {'male': 'it-IT-DiegoNeural', 'female': 'it-IT-ElsaNeural'},
+}
+
+
+def voice_gender(voice):
+    """Infer 'male'/'female' from a configured voice name (first word).
+    Defaults to 'male' for unknown voices."""
+    first = voice.strip().split()[0].lower() if voice.strip() else ''
+    if first in FEMALE_VOICES:
+        return 'female'
+    return 'male'
+
+
+def edge_voice_for(config):
+    """Resolve the edge-tts voice for this config from language + voice gender,
+    or None when the language has no edge mapping (caller uses `say` instead)."""
+    lang = EDGE_VOICES.get(language_code(config))
+    if not lang:
+        return None
+    return lang.get(voice_gender(config.get('voice', '')))
 
 
 def load_config():
@@ -210,17 +251,22 @@ def _locked_state(fn):
         return state
 
 
-def _is_our_say(pid):
-    """True if pid is alive and is a `say` process (so we never kill
-    someone else's process after PID reuse)."""
+def _is_our_tts(pid):
+    """True if pid is alive and is one of our TTS processes — either a `say`
+    command or the edge_speak.py helper — so we never kill someone else's
+    process after PID reuse."""
     try:
         os.kill(pid, 0)
     except (OSError, TypeError):
         return False
     try:
-        out = subprocess.run(['ps', '-p', str(pid), '-o', 'comm='],
+        out = subprocess.run(['ps', '-p', str(pid), '-o', 'command='],
                              capture_output=True, text=True)
-        return out.stdout.strip().endswith('say')
+        cmd = out.stdout.strip()
+        if 'edge_speak.py' in cmd:
+            return True
+        first = cmd.split()[0] if cmd else ''
+        return os.path.basename(first) == 'say'
     except OSError:
         return False
 
@@ -247,14 +293,17 @@ def speak(text, priority=False, force=False):
     def check_and_kill(state):
         pid, ts = state.get('pid'), state.get('ts', 0)
         if priority:
-            if pid and _is_our_say(pid):
+            if pid and _is_our_tts(pid):
+                # Kill the whole process group (start_new_session made the TTS
+                # process a group leader), so an edge helper's `afplay`/`say`
+                # child dies with it.
                 try:
-                    os.kill(pid, 15)
+                    os.killpg(os.getpgid(pid), signal.SIGTERM)
                 except OSError:
                     pass
             return None
         # Non-priority: bail out if still speaking or just finished
-        if (pid and _is_our_say(pid)) or (time.time() - ts) < 2.0:
+        if (pid and _is_our_tts(pid)) or (time.time() - ts) < 2.0:
             raise _StillSpeaking()
         return None
 
@@ -273,9 +322,28 @@ def speak(text, priority=False, force=False):
     voice = config.get('voice', 'Krzysztof')
     rate = str(config.get('rate', 220))
 
+    edge_voice = edge_voice_for(config) if config.get('engine') == 'edge' else None
+
     try:
-        proc = subprocess.Popen(['say', '-v', voice, '-r', rate, text],
-                                start_new_session=True)
+        if edge_voice:
+            # Detached helper: synthesizes via edge-tts and plays it, falling
+            # back to `say` on any failure. Text + voices go through the env so
+            # they never appear in `ps` and survive odd characters.
+            payload = json.dumps({
+                "edge_voice": edge_voice,
+                "edge_rate": str(config.get('edge_rate', '+0%')),
+                "text": text,
+                "say_voice": voice,
+                "say_rate": rate,
+            })
+            proc = subprocess.Popen(
+                [sys.executable, EDGE_SPEAK_PATH],
+                start_new_session=True,
+                env={**os.environ, "SIMPLE_TTS_PAYLOAD": payload},
+            )
+        else:
+            proc = subprocess.Popen(['say', '-v', voice, '-r', rate, text],
+                                    start_new_session=True)
         _locked_state(lambda state: {"pid": proc.pid, "ts": time.time()})
     except (OSError, FileNotFoundError) as e:
         print(f"TTS error: {e}", file=sys.stderr)

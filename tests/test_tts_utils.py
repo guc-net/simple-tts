@@ -126,10 +126,35 @@ class TestSpeak:
         assert fake_say == []
 
     def test_speaks_with_configured_voice_and_rate(self, write_config, fake_say):
-        write_config(voice="Ewa", rate=200)
+        write_config(voice="Ewa", rate=200, engine="say")
         speak("dzień dobry")
         assert len(fake_say) == 1
         assert fake_say[0][:5] == ["say", "-v", "Ewa", "-r", "200"]
+
+    def test_edge_engine_spawns_helper_with_payload(self, write_config, fake_say):
+        # Default engine is "edge": speak() spawns the edge_speak.py helper and
+        # passes the synthesis details through the SIMPLE_TTS_PAYLOAD env var.
+        write_config(voice="Krzysztof", language="Polish")  # engine defaults to edge
+        speak("dzień dobry")
+        assert len(fake_say) == 1
+        assert fake_say[0][1].endswith("edge_speak.py")
+        payload = json.loads(fake_say.envs[0]["SIMPLE_TTS_PAYLOAD"])
+        assert payload["edge_voice"] == "pl-PL-MarekNeural"  # male voice
+        assert payload["text"] == "dzień dobry"
+        assert payload["say_voice"] == "Krzysztof"  # fallback voice preserved
+
+    def test_edge_engine_picks_female_voice_for_female_local_voice(self, write_config, fake_say):
+        write_config(voice="Ewa", language="Polish")
+        speak("gotowe")
+        payload = json.loads(fake_say.envs[0]["SIMPLE_TTS_PAYLOAD"])
+        assert payload["edge_voice"] == "pl-PL-ZofiaNeural"
+
+    def test_edge_engine_falls_back_to_say_for_unmapped_language(self, write_config, fake_say):
+        # A language whose code has no EDGE_VOICES entry uses the local `say`
+        # engine ("xx" passes through language_code as a 2-letter code).
+        write_config(voice="Krzysztof", language="xx")
+        speak("hello")
+        assert fake_say[0][0] == "say"
 
     def test_records_pid_and_timestamp(self, write_config, fake_say, isolated_paths):
         write_config()
@@ -149,22 +174,24 @@ class TestSpeak:
     def test_nonpriority_speaks_after_window(self, write_config, fake_say,
                                              isolated_paths, monkeypatch):
         write_config()
-        monkeypatch.setattr(tts_utils, "_is_our_say", lambda pid: False)
+        monkeypatch.setattr(tts_utils, "_is_our_tts", lambda pid: False)
         (isolated_paths / "state.json").write_text(
             json.dumps({"pid": 99999999, "ts": time.time() - 10}))
         speak("już można mówić")
         assert len(fake_say) == 1
 
-    def test_priority_kills_running_say(self, write_config, fake_say,
+    def test_priority_kills_running_tts(self, write_config, fake_say,
                                         isolated_paths, monkeypatch):
         write_config()
         killed = []
-        monkeypatch.setattr(tts_utils, "_is_our_say", lambda pid: True)
-        monkeypatch.setattr(tts_utils.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+        monkeypatch.setattr(tts_utils, "_is_our_tts", lambda pid: True)
+        monkeypatch.setattr(tts_utils.os, "getpgid", lambda pid: pid)
+        monkeypatch.setattr(tts_utils.os, "killpg",
+                            lambda pgid, sig: killed.append((pgid, sig)))
         (isolated_paths / "state.json").write_text(
             json.dumps({"pid": 4242, "ts": time.time()}))
         speak("pilne", priority=True)
-        assert (4242, 15) in killed
+        assert (4242, 15) in killed  # SIGTERM == 15
         assert len(fake_say) == 1
 
 
