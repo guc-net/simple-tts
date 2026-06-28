@@ -1,7 +1,7 @@
 {
   "name": "simple-tts",
   "description": "Text-to-speech notifications for Claude Code using macOS say command. Speaks contextual summaries when Claude finishes a task or needs user attention.",
-  "version": "2.6.0",
+  "version": "2.7.0",
   "author": {
     "name": "Pawe\u0142 Usterka"
   }
