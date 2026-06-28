@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "simple-tts": {
-      "command": "python3",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/mcp/server.py"]
+      "command": "sh",
+      "args": ["-c", "R=$CLAUDE_PLUGIN_ROOT; exec python3 \"${R:-$PWD}/mcp/server.py\""]
     }
   }
 }
