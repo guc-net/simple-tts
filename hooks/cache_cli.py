@@ -45,8 +45,8 @@ def _trim(text, width=60):
     return text if len(text) <= width else text[:width - 1] + "…"
 
 
-def cmd_stats(top_n=5):
-    data = ac.stats()
+def cmd_stats(top_n=10):
+    data = ac.stats()  # already sorted most-played first
     limit = _max_mb()
     print(f"simple-tts audio cache — {data['count']} wpisów, "
           f"{_human(data['total_bytes'])} / limit {limit:.0f} MB")
@@ -55,19 +55,14 @@ def cmd_stats(top_n=5):
         print("(pusty)")
         return
 
-    # Always surface the most-played phrases (entries are already plays-desc).
-    popular = [e for e in data["entries"] if e["plays"] > 0][:top_n]
-    print("\n🔝 Najpopularniejsze zdania:")
-    if popular:
-        for e in popular:
-            print(f"  {e['plays']:>4}×  {_trim(e['text'])}")
-    else:
-        print("  (jeszcze nic nie odtworzono więcej niż raz)")
-
-    print(f"\nWszystkie wpisy:\n{'odtw.':>6}  {'ostatnio':16}  {'rozmiar':>8}  tekst")
-    for e in data["entries"]:
+    shown = data["entries"][:top_n]
+    print(f"\n🔝 {len(shown)} najpopularniejszych:")
+    print(f"{'odtw.':>6}  {'ostatnio':16}  {'rozmiar':>8}  tekst")
+    for e in shown:
         print(f"{e['plays']:>6}  {_when(e['last_used']):16}  "
               f"{_human(e['size']):>8}  {_trim(e['text'])}")
+    if data["count"] > top_n:
+        print(f"… i {data['count'] - top_n} więcej (pokazano {top_n} najpopularniejszych)")
 
 
 def cmd_prune(max_mb):

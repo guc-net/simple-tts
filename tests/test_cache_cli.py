@@ -24,25 +24,25 @@ def _make(key, size, plays, last_used, text):
     ac._with_index(mutate)
 
 
-def test_stats_shows_most_popular_section_first(capsys):
+def test_stats_lists_most_played_first(capsys):
     _make("a", 10, plays=2, last_used=1000, text="rzadkie zdanie")
     _make("b", 10, plays=42, last_used=1000, text="ulubione zdanie")
     cache_cli.cmd_stats()
     out = capsys.readouterr().out
-    assert "Najpopularniejsze" in out
-    # the most-played phrase appears in the popular section, before the full list
-    popular_idx = out.index("ulubione zdanie")
-    rare_idx = out.index("rzadkie zdanie")
-    assert popular_idx < rare_idx
-    assert "42×" in out
+    assert out.index("ulubione zdanie") < out.index("rzadkie zdanie")
+    assert "42" in out
 
 
-def test_stats_handles_no_plays_yet(capsys):
-    _make("a", 10, plays=0, last_used=1000, text="x")
+def test_stats_shows_only_top_10(capsys):
+    for i in range(15):
+        _make(f"k{i:02d}", 10, plays=i, last_used=1000, text=f"zdanie numer {i:02d}")
     cache_cli.cmd_stats()
     out = capsys.readouterr().out
-    assert "Najpopularniejsze" in out
-    assert "jeszcze nic nie odtworzono" in out
+    # top 10 by plays = 14..05 are shown; 04..00 are not
+    assert "zdanie numer 14" in out
+    assert "zdanie numer 05" in out
+    assert "zdanie numer 04" not in out
+    assert "i 5 więcej" in out
 
 
 def test_empty_cache_is_reported(capsys):
