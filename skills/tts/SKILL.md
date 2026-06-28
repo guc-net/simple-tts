@@ -1,5 +1,5 @@
 ---
-description: "Mute or unmute simple-tts speech without uninstalling. Usage: /tts on, /tts off, /tts status. Edits the enabled flag in the plugin config."
+description: "Mute or unmute simple-tts speech and manage the audio cache. Usage: /tts on, /tts off, /tts status, /tts cache [stats|prune|clear]."
 user_invocable: true
 ---
 
@@ -34,3 +34,21 @@ Read the config and report:
 - enabled: `enabled` key (missing key = enabled)
 - voice, rate, language
 - quiet hours, if `quiet_hours` is set (speech is silenced between start and end)
+
+## /tts cache [stats|prune|clear]
+
+Manages the on-disk edge-tts audio cache via `cache_cli.py`. No subcommand = `stats`.
+Resolve the script path (works whether invoked as an installed plugin or from the repo), then run it:
+
+```bash
+CLI="$(ls "${CLAUDE_PLUGIN_ROOT:-}/hooks/cache_cli.py" 2>/dev/null \
+  || ls ~/.claude/plugins/cache/*/simple-tts/*/hooks/cache_cli.py 2>/dev/null | sort -V | tail -1 \
+  || ls "$PWD/hooks/cache_cli.py" 2>/dev/null)"
+python3 "$CLI" stats
+```
+
+- `/tts cache` or `/tts cache stats` → run with `stats`: prints each cached phrase, its play count, last-used time and size, plus total size vs the `cache_max_mb` budget. Show the output to the user. Safe to add a TTS tag.
+- `/tts cache prune` → run with `prune` (optionally `prune --max-mb N`): evicts least-used-then-oldest entries down to the budget and reports bytes freed.
+- `/tts cache clear` → run with `clear`: deletes the whole cache. Confirm what was removed.
+
+The size budget is the `cache_max_mb` config key (default 100). Eviction also runs automatically after each new synthesis.

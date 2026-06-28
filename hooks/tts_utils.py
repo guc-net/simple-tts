@@ -30,6 +30,9 @@ DEFAULT_CONFIG = {
     "engine": "edge",
     # edge-tts speed as a percentage offset from normal (e.g. "+0%", "-10%").
     "edge_rate": "+0%",
+    # Total size budget (MB) for the on-disk edge-tts audio cache; least-used-
+    # then-oldest entries are evicted once it is exceeded.
+    "cache_max_mb": 100,
 }
 
 # Map of language names (as stored by the setup skill) to phonetic dict codes
@@ -335,6 +338,7 @@ def speak(text, priority=False, force=False):
                 "text": text,
                 "say_voice": voice,
                 "say_rate": rate,
+                "cache_max_mb": config.get('cache_max_mb', 100),
             })
             proc = subprocess.Popen(
                 [sys.executable, EDGE_SPEAK_PATH],
