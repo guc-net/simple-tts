@@ -25,9 +25,9 @@ import os
 import re
 import sys
 
-# Very dark green (24-bit truecolor); falls back to nearest colour on terminals
+# Dark green (24-bit truecolor); falls back to nearest colour on terminals
 # without truecolor support.
-GREEN = "\x1b[38;2;0;60;0m"
+GREEN = "\x1b[38;2;0;100;0m"
 RESET = "\x1b[0m"
 
 TTS_TAG_RE = re.compile(r"[ \t]*<!--\s*TTS:\s*(.*?)\s*-->[ \t]*", re.DOTALL | re.IGNORECASE)
