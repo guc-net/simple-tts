@@ -2,7 +2,7 @@
   "mcpServers": {
     "simple-tts": {
       "command": "sh",
-      "args": ["-c", "R=$CLAUDE_PLUGIN_ROOT; exec python3 \"${R:-$PWD}/mcp/server.py\""]
+      "args": ["-c", "R='${CLAUDE_PLUGIN_ROOT}'; case \"$R\" in *'${'*|'') R=\"$PWD\";; esac; exec python3 \"$R/mcp/server.py\""]
     }
   }
 }
