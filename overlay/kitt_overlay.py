@@ -59,7 +59,7 @@ from Quartz import (  # noqa: E402
 W, H = 520, 40
 SCALE = 2
 Y_OFFSET = 6
-RENDER_FPS = 40
+RENDER_FPS = 28
 MODE_CHECK_SEC = 0.18
 N_LED = 31
 EDGE = 16.0
@@ -69,10 +69,11 @@ HEAD_BRIGHT = 1.0
 HEAD_SIGMA = 0.045             # promień jasnej głowy (znormalizowany)
 SWEEP_HALF = 0.44              # połowa szerokości przejazdu (0.5 = do krawędzi)
 SPEED_IDLE = 0.25              # tempo fazy w spoczynku (i tak amp=0)
-SPEED_THINK = 0.85             # tempo przejazdu w „myśli"
+SPEED_THINK = 0.52             # wolniejszy przejazd
 EASE_TAU = 0.22                # wygładzenie dochodzenia do celu (przyspieszanie)
-TAIL_TAU = 0.16                # czas wygasania ogona (dłużej = dłuższy ogon)
-SPEAK_TAU = 0.05               # szybkie wygasanie w modulatorze (czułość)
+TAIL_TAU = 0.10                # krótszy ogon (szybciej znika)
+SPEAK_TAU = 0.09               # spokojniejszy modulator (mniej migotania)
+LEVEL_TAU = 0.07               # wygładzanie głośności w czasie (anty-migotanie)
 SPEAK_BASE = 0.03              # min. rozstaw modulatora (cisza)
 SPEAK_GAIN = 0.34              # rozszerzanie z głośnością
 SPEAK_EDGE = 0.06              # miękkość krawędzi rozbłysku
@@ -224,12 +225,13 @@ class Controller(NSObject):
                 if self.speak:
                     env, sdt, start = self.speak
                     idx = int((wall - start) / sdt)
-                    level = env[idx] if 0 <= idx < len(env) else 0.0
+                    level_t = env[idx] if 0 <= idx < len(env) else 0.0
                 else:
-                    level = 0.5 + 0.5 * math.sin(now * 6.0)
+                    level_t = 0.5 + 0.5 * math.sin(now * 6.0)
             else:
-                level = 0.0
-            reach = (SPEAK_BASE + level * SPEAK_GAIN) * self.bloom
+                level_t = 0.0
+            self.level += (level_t - self.level) * (1.0 - math.exp(-dt / LEVEL_TAU))
+            reach = (SPEAK_BASE + self.level * SPEAK_GAIN) * self.bloom
             decay = math.exp(-dt / (SPEAK_TAU if self.mode == "speak" else TAIL_TAU))
             led = self.led
             for i, p in enumerate(_POS):
@@ -279,6 +281,7 @@ def main():
     ctrl.speed = ctrl.speed_t = SPEED_IDLE
     ctrl.vis = ctrl.vis_t = 0.0
     ctrl.bloom = ctrl.bloom_t = 0.0
+    ctrl.level = 0.0
     ctrl.phase = 0.0
     ctrl.t = time.monotonic()
     ctrl.lastcheck = -1.0
