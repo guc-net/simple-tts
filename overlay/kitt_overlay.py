@@ -1,24 +1,21 @@
 #!/usr/bin/env python3
-"""Nakładka KITT (Cocoa) dla simple-tts — pływa NAD pełnoekranowym terminalem.
+"""Nakładka KITT (Cocoa) dla simple-tts — parametryczne Core Animation.
 
-Wydajność: klatki każdego trybu są renderowane RAZ (tym samym rendererem PIL —
-wygląd 1:1) i przekazywane do Core Animation jako CAKeyframeAnimation na
-`layer.contents`. Cyklowanie klatek robi window server na GPU, w osobnym wątku —
-nasz proces nie robi nic per-klatkę (~0% CPU w stanie ustalonym). Jedyny timer
-to lekki podgląd stanu co MODE_CHECK_SEC, który przy zmianie trybu podmienia
-animację.
+Kropka to prawdziwy obiekt (CALayer): pozycja i skala są animowane, więc
+przejścia są płynne, a kropka FIZYCZNIE przesuwa się w odpowiednie miejsce
+(np. zbiega do środka przy mowie). Ogon = CAReplicatorLayer (opóźnione kopie).
+Modulator „gadania" sterowany obwiednią odtwarzanego audio (simple-tts-speak.json),
+więc pulsuje w rytm tego, co słychać. Wszystko na GPU -> ~0% CPU.
 
-Trzy tryby wg stanu simple-tts (patrz kitt_state):
-  idle  -> kropka + gasnący ogon jeździ prawo<->lewo
-  think -> dwie kropki nerwowo gonią się (Claude pracuje)
-  speak -> modulator głosu (simple-tts właśnie mówi)
+Stany (kitt_state): idle (wolny przejazd) / think (szybki) / speak (środek +
+modulator) / None (wyłączone). Pływa nad pełnym ekranem (NSPanel, CanJoinAllSpaces
++ FullScreenAuxiliary). Pojedyncza instancja (flock).
 
-Przezroczyste, klik-przechodzące NSPanel na każdym ekranie, na wysokim poziomie
-z CanJoinAllSpaces + FullScreenAuxiliary. Wymaga: pyobjc-framework-Cocoa,
-pyobjc-framework-Quartz, Pillow.
+Wymaga: pyobjc-framework-Cocoa, pyobjc-framework-Quartz, Pillow.
 """
 
 import fcntl
+import json
 import os
 import sys
 import time
@@ -47,38 +44,41 @@ from Quartz import (  # noqa: E402
     CABasicAnimation,
     CAKeyframeAnimation,
     CALayer,
+    CAMediaTimingFunction,
+    CAReplicatorLayer,
+    CATransaction,
     CGColorSpaceCreateDeviceRGB,
     CGDataProviderCreateWithData,
     CGImageCreate,
-    kCAAnimationDiscrete,
+    kCAAnimationLinear,
+    kCAMediaTimingFunctionEaseInEaseOut,
     kCGBitmapByteOrderDefault,
     kCGImageAlphaLast,
 )
 
-W, H = 520, 40             # rozmiar w punktach
-SCALE = 2                  # render 2x (Retina)
-Y_OFFSET = 6               # od górnej krawędzi ekranu
-MODE_CHECK_SEC = 0.25      # jak często sprawdzać stan (jedyny timer)
-BUILD_FPS = 16             # gęstość klatek w prekompute
-THINK_SPEEDUP = 2.6        # „myśli" to ta sama kropka co idle, tylko szybciej
-ALPHA_BOOST = 2.2          # krycie: jaśniej = bardziej kryjące
-CROSSFADE_SEC = 0.35       # płynne przenikanie między animacjami stanów
+# --- konfiguracja ----------------------------------------------------------
+W, H = 520, 40                 # punkty
+SCALE = 2                      # render 2x (Retina)
+Y_OFFSET = 6
+MODE_CHECK_SEC = 0.25
+DOT_D = 30                     # średnica świecącej kropki (pt)
+MARGIN = DOT_D / 2.0 + 6.0     # by kropka nie wychodziła poza kadr
+IDLE_HALF = 1.8                # sekundy na jeden przejazd L->R (idle)
+THINK_SPEEDUP = 2.6            # „myśli" = szybciej (przez layer.speed)
+CONVERGE_SEC = 0.35            # zbieganie do środka / powrót na tor
+FADE_SEC = 0.35               # wejście/wyjście (opacity)
+SPEAK_GAIN = 5.0               # maks. rozciągnięcie kropki w modulatorze
+TAIL_COUNT = 8                 # kopie ogona
+TAIL_DELAY = 0.045             # opóźnienie między kopiami (s)
+TAIL_ALPHA = -0.12             # gaśnięcie ogona
+SPEAK_STATE_PATH = os.path.expanduser("~/.claude/simple-tts-speak.json")
 LOG = os.path.expanduser("~/.claude/simple-tts-overlay.log")
 LOCK_PATH = os.path.expanduser("~/.claude/simple-tts-overlay.lock")
 
 _CS = CGColorSpaceCreateDeviceRGB()
+_EASE = CAMediaTimingFunction.functionWithName_(kCAMediaTimingFunctionEaseInEaseOut)
 _lock_handle = None
-
-
-def _single_instance():
-    """True gdy udało się zająć blokadę — inaczej działa już inna nakładka."""
-    global _lock_handle
-    _lock_handle = open(LOCK_PATH, "w")
-    try:
-        fcntl.flock(_lock_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        return True
-    except OSError:
-        return False
+_MIDY = H / 2.0
 
 
 def _log(msg):
@@ -89,38 +89,134 @@ def _log(msg):
         pass
 
 
-def _mode_period(mode):
-    if mode == "idle":
-        return 2 * KF.SWEEP_SEC              # bezszwowa pętla (fala trójkątna)
-    if mode == "think":
-        return 2 * KF.SWEEP_SEC / THINK_SPEEDUP   # ta sama kropka, szybciej
-    return 2.4                               # speak: pętla ~2.4 s
+def _single_instance():
+    global _lock_handle
+    _lock_handle = open(LOCK_PATH, "w")
+    try:
+        fcntl.flock(_lock_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except OSError:
+        return False
 
 
-def _build_frames(mode):
-    """Renderuj jeden okres trybu -> lista CGImage. Zwraca (frames, keep_bytes,
-    period). keep_bytes trzeba utrzymać przy życiu (CGImage nie kopiuje danych)."""
-    period = _mode_period(mode)
-    pw, ph = W * SCALE, H * SCALE
-    n = max(2, round(period * BUILD_FPS))
-    frames, keep = [], []
-    for k in range(n):
-        t = k * period / n
-        frame = KF.render(pw, ph, t, mode)
-        alpha = frame.convert("L").point(lambda v: min(255, int(v * ALPHA_BOOST)))
-        rgba = frame.convert("RGBA")
-        rgba.putalpha(alpha)
-        raw = rgba.tobytes()
-        keep.append(raw)
-        prov = CGDataProviderCreateWithData(None, raw, len(raw), None)
-        cg = CGImageCreate(pw, ph, 8, 32, pw * 4, _CS,
-                           kCGImageAlphaLast | kCGBitmapByteOrderDefault,
-                           prov, None, False, 0)
-        frames.append(cg)
-    return frames, keep, period
+def _dot_cgimage():
+    px = int(DOT_D * SCALE)
+    raw = KF.dot_sprite(px).tobytes()
+    prov = CGDataProviderCreateWithData(None, raw, len(raw), None)
+    cg = CGImageCreate(px, px, 8, 32, px * 4, _CS,
+                       kCGImageAlphaLast | kCGBitmapByteOrderDefault,
+                       prov, None, False, 0)
+    return cg, raw            # raw musi żyć tak długo jak CGImage
 
 
-def make_panel():
+# --- animacje (funkcje modułowe, operują na warstwie kropki) ---------------
+def _pres_x(dot):
+    pl = dot.presentationLayer()
+    return (pl.position().x if pl is not None else dot.position().x)
+
+
+def _sweep(dot, half):
+    a = CABasicAnimation.animationWithKeyPath_("position.x")
+    a.setFromValue_(MARGIN)
+    a.setToValue_(W - MARGIN)
+    a.setDuration_(half)
+    a.setAutoreverses_(True)
+    a.setRepeatCount_(1e9)
+    a.setTimingFunction_(_EASE)
+    a.setRemovedOnCompletion_(False)
+    dot.setPosition_((MARGIN, _MIDY))
+    dot.addAnimation_forKey_(a, "move")
+
+
+def _to_sweep(dot):
+    """Wejdź w przejazd: z bieżącej pozycji dojedź na tor, potem zapętl."""
+    cur = _pres_x(dot)
+    if abs(cur - MARGIN) < 1.5:
+        _sweep(dot, IDLE_HALF)
+        return
+    dot.setPosition_((cur, _MIDY))                 # bez skoku po usunięciu anim
+    intro = CABasicAnimation.animationWithKeyPath_("position.x")
+    intro.setFromValue_(cur)
+    intro.setToValue_(MARGIN)
+    intro.setDuration_(CONVERGE_SEC)
+    intro.setTimingFunction_(_EASE)
+    intro.setRemovedOnCompletion_(False)
+    dot.setPosition_((MARGIN, _MIDY))
+    CATransaction.begin()
+    CATransaction.setCompletionBlock_(lambda: _sweep(dot, IDLE_HALF))
+    dot.addAnimation_forKey_(intro, "move")
+    CATransaction.commit()
+
+
+def _read_envelope():
+    try:
+        with open(SPEAK_STATE_PATH) as f:
+            d = json.load(f)
+        env, dt, start = d["env"], float(d["dt"]), float(d["start"])
+        if not env:
+            return None
+        offset = time.time() - start
+        if offset < 0 or offset >= len(env) * dt:   # brak/nieaktualne
+            return None
+        return env, dt, offset
+    except (OSError, ValueError, KeyError):
+        return None
+
+
+def _modulate(dot):
+    data = _read_envelope()
+    if data:
+        env, dt, offset = data
+        a = CAKeyframeAnimation.animationWithKeyPath_("transform.scale.x")
+        a.setValues_([1.0 + e * SPEAK_GAIN for e in env])
+        a.setDuration_(len(env) * dt)
+        a.setCalculationMode_(kCAAnimationLinear)
+        a.setRemovedOnCompletion_(False)
+        a.setTimeOffset_(offset)                   # sync do bieżącego miejsca audio
+        dot.addAnimation_forKey_(a, "scale")
+    else:                                          # brak obwiedni -> żywy puls
+        a = CABasicAnimation.animationWithKeyPath_("transform.scale.x")
+        a.setFromValue_(1.3)
+        a.setToValue_(1.0 + SPEAK_GAIN * 0.6)
+        a.setDuration_(0.26)
+        a.setAutoreverses_(True)
+        a.setRepeatCount_(1e9)
+        a.setRemovedOnCompletion_(False)
+        dot.addAnimation_forKey_(a, "scale")
+
+
+def _to_speak(dot):
+    """Zbiegnij do środka i zacznij modulować w rytm audio."""
+    cur = _pres_x(dot)
+    dot.setPosition_((cur, _MIDY))
+    dot.removeAnimationForKey_("move")
+    conv = CABasicAnimation.animationWithKeyPath_("position.x")
+    conv.setFromValue_(cur)
+    conv.setToValue_(W / 2.0)
+    conv.setDuration_(CONVERGE_SEC)
+    conv.setTimingFunction_(_EASE)
+    conv.setRemovedOnCompletion_(False)
+    dot.setPosition_((W / 2.0, _MIDY))
+    dot.addAnimation_forKey_(conv, "move")
+    _modulate(dot)
+
+
+def _leave_speak(dot):
+    dot.removeAnimationForKey_("scale")            # skala wraca do 1
+
+
+def _fade(layer, to):
+    pl = layer.presentationLayer()
+    frm = pl.opacity() if pl is not None else layer.opacity()
+    a = CABasicAnimation.animationWithKeyPath_("opacity")
+    a.setFromValue_(frm)
+    a.setToValue_(to)
+    a.setDuration_(FADE_SEC)
+    layer.setOpacity_(to)
+    layer.addAnimation_forKey_(a, "fade")
+
+
+def make_panel(cgimg):
     panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
         NSMakeRect(0, 0, W, H), NSWindowStyleMaskNonactivatingPanel,
         NSBackingStoreBuffered, False)
@@ -138,47 +234,29 @@ def make_panel():
 
     view = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, W, H))
     view.setWantsLayer_(True)
-    # dwie nakładające się warstwy A/B — zmiana stanu przenika A<->B (crossfade)
-    layers = []
-    for _ in range(2):
-        lyr = CALayer.layer()
-        lyr.setFrame_(NSMakeRect(0, 0, W, H))
-        lyr.setContentsGravity_("resize")
-        lyr.setContentsScale_(SCALE)
-        lyr.setOpacity_(0.0)
-        view.layer().addSublayer_(lyr)
-        layers.append(lyr)
+    rep = CAReplicatorLayer.layer()               # ogon: opóźnione kopie kropki
+    rep.setFrame_(NSMakeRect(0, 0, W, H))
+    rep.setInstanceCount_(TAIL_COUNT)
+    rep.setInstanceDelay_(TAIL_DELAY)
+    rep.setInstanceAlphaOffset_(TAIL_ALPHA)
+    rep.setOpacity_(0.0)
+    dot = CALayer.layer()
+    dot.setBounds_(((0.0, 0.0), (DOT_D, DOT_D)))
+    dot.setContentsGravity_("resizeAspect")
+    dot.setContentsScale_(SCALE)
+    dot.setContents_(cgimg)
+    dot.setPosition_((MARGIN, _MIDY))
+    rep.addSublayer_(dot)
+    view.layer().addSublayer_(rep)
     panel.setContentView_(view)
     panel.orderFrontRegardless()
-    return panel, layers
+    return panel, dot, rep
 
 
-def top_center(screen_frame):
-    x = screen_frame.origin.x + (screen_frame.size.width - W) / 2.0
-    y = screen_frame.origin.y + screen_frame.size.height - H - Y_OFFSET
+def top_center(sf):
+    x = sf.origin.x + (sf.size.width - W) / 2.0
+    y = sf.origin.y + sf.size.height - H - Y_OFFSET
     return x, y
-
-
-def _fade(layer, to):
-    """Płynnie zmień krycie warstwy do `to` (od bieżącego, widocznego stanu)."""
-    pres = layer.presentationLayer()
-    frm = pres.opacity() if pres is not None else layer.opacity()
-    anim = CABasicAnimation.animationWithKeyPath_("opacity")
-    anim.setFromValue_(frm)
-    anim.setToValue_(to)
-    anim.setDuration_(CROSSFADE_SEC)
-    layer.setOpacity_(to)
-    layer.addAnimation_forKey_(anim, "fade")
-
-
-def _kitt_anim(frames, period):
-    anim = CAKeyframeAnimation.animationWithKeyPath_("contents")
-    anim.setValues_(frames)
-    anim.setDuration_(period)
-    anim.setCalculationMode_(kCAAnimationDiscrete)
-    anim.setRepeatCount_(1e9)
-    anim.setRemovedOnCompletion_(False)
-    return anim
 
 
 class Controller(NSObject):
@@ -189,28 +267,31 @@ class Controller(NSObject):
                 if i < len(screens):
                     ent["panel"].setFrameOrigin_(top_center(screens[i].frame()))
             mode = KS.current_mode()
-            if mode == self.mode:
+            if mode == self.curmode:
                 return
-            self.mode = mode
+            self.curmode = mode
             self.applyMode_(mode)
         except Exception:
             _log("check FAILED:\n" + traceback.format_exc())
 
     def applyMode_(self, mode):
+        old = self.prevmode
+        self.prevmode = mode
         for ent in self.entries:
-            a = ent["layers"][ent["active"]]
-            b = ent["layers"][1 - ent["active"]]
-            if mode is None:                         # wyłączone -> zgaś oba
-                _fade(a, 0.0)
-                _fade(b, 0.0)
+            dot, rep = ent["dot"], ent["rep"]
+            if mode is None:
+                _fade(rep, 0.0)
                 continue
-            frames, period = self.cache[mode]
-            b.setContents_(frames[0])
-            b.removeAnimationForKey_("kitt")
-            b.addAnimation_forKey_(_kitt_anim(frames, period), "kitt")
-            _fade(b, 1.0)                             # nowy stan wchodzi...
-            _fade(a, 0.0)                             # ...stary wychodzi
-            ent["active"] = 1 - ent["active"]
+            _fade(rep, 1.0)
+            if old == "speak" and mode != "speak":
+                _leave_speak(dot)
+            if mode in ("idle", "think"):
+                dot.setSpeed_(THINK_SPEEDUP if mode == "think" else 1.0)
+                if old not in ("idle", "think"):
+                    _to_sweep(dot)
+            else:                                  # speak
+                dot.setSpeed_(1.0)
+                _to_speak(dot)
 
 
 def main():
@@ -221,33 +302,21 @@ def main():
     app = NSApplication.sharedApplication()
     app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
 
-    t0 = time.perf_counter()
-    keepalive = []
-    idle_frames, keep_i, _ = _build_frames("idle")
-    speak_frames, keep_s, _ = _build_frames("speak")
-    keepalive += [keep_i, keep_s]
-    # „myśli" współdzieli klatki z idle — pojedyncza kropka, tylko szybciej.
-    cache = {
-        "idle": (idle_frames, _mode_period("idle")),
-        "think": (idle_frames, _mode_period("think")),
-        "speak": (speak_frames, _mode_period("speak")),
-    }
-    _log(f"prekompute {len(idle_frames) + len(speak_frames)} klatek w "
-         f"{(time.perf_counter() - t0) * 1000:.0f} ms")
+    cgimg, raw = _dot_cgimage()
 
     entries = []
     for s in NSScreen.screens():
-        panel, layers = make_panel()
+        panel, dot, rep = make_panel(cgimg)
         panel.setFrameOrigin_(top_center(s.frame()))
-        entries.append({"panel": panel, "layers": layers, "active": 0})
-    _log(f"start: {len(entries)} ekran(ów)")
+        entries.append({"panel": panel, "dot": dot, "rep": rep})
+    _log(f"start (CA): {len(entries)} ekran(ów)")
 
     ctrl = Controller.alloc().init()
     ctrl.entries = entries
-    ctrl.cache = cache
-    ctrl._keepalive = keepalive
-    ctrl.mode = "__none__"
-    ctrl.check_(None)                            # ustaw tryb od razu
+    ctrl.curmode = "__none__"
+    ctrl.prevmode = "__init__"
+    ctrl._raw = raw                                # utrzymaj bajty CGImage
+    ctrl.check_(None)
     NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
         MODE_CHECK_SEC, ctrl, b"check:", None, True)
     app.run()

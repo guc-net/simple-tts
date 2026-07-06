@@ -122,3 +122,25 @@ def render(W, H, t, mode="idle"):
     spr, rx, ry = _sprite(ew, H)
     fn = _MODES.get(mode, _idle)
     return fn(frame, t, spr, rx, ry, ew)
+
+
+def dot_sprite(px, boost=1.6):
+    """Pojedyncza świecąca kropka jako RGBA (przezroczyste tło) — dla warstwy
+    Core Animation. Ten sam kolor/rozkład co _sprite; alfa niesie świecenie."""
+    img = Image.new("RGBA", (px, px), (0, 0, 0, 0))
+    p = img.load()
+    r = px / 2.0
+    for y in range(px):
+        for x in range(px):
+            nx, ny = (x - r) / r, (y - r) / r
+            d = math.sqrt(nx * nx + ny * ny)
+            if d >= 1.0:
+                a = 0.0
+            elif d <= 0.40:
+                a = 1.0
+            else:
+                a = 1.0 - (d - 0.40) / 0.60
+            a *= a
+            p[x, y] = (CORE[0], CORE[1], CORE[2],
+                       max(0, min(255, int(255 * a * boost))))
+    return img
