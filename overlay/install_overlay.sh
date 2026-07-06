@@ -23,9 +23,9 @@ PY="$(pick_python "${1:-}")"
 echo "Python: $PY"
 
 # 2) zależności
-echo "Instaluję zależności (PyObjC + Pillow)…"
-"$PY" -m pip install --quiet --upgrade pyobjc-framework-Cocoa Pillow
-"$PY" -c "import AppKit, PIL" || { echo "Brak AppKit/PIL po instalacji"; exit 1; }
+echo "Instaluję zależności (PyObjC Cocoa+Quartz + Pillow)…"
+"$PY" -m pip install --quiet --upgrade pyobjc-framework-Cocoa pyobjc-framework-Quartz Pillow
+"$PY" -c "import AppKit, Quartz, PIL" || { echo "Brak AppKit/Quartz/PIL po instalacji"; exit 1; }
 
 # 3) kopia do stabilnej lokalizacji (przeżywa aktualizacje pluginu)
 mkdir -p "$DEST_DIR"

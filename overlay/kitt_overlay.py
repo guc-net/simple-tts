@@ -1,19 +1,24 @@
 #!/usr/bin/env python3
 """Nakładka KITT (Cocoa) dla simple-tts — pływa NAD pełnoekranowym terminalem.
 
+Wydajność: klatki każdego trybu są renderowane RAZ (tym samym rendererem PIL —
+wygląd 1:1) i przekazywane do Core Animation jako CAKeyframeAnimation na
+`layer.contents`. Cyklowanie klatek robi window server na GPU, w osobnym wątku —
+nasz proces nie robi nic per-klatkę (~0% CPU w stanie ustalonym). Jedyny timer
+to lekki podgląd stanu co MODE_CHECK_SEC, który przy zmianie trybu podmienia
+animację.
+
 Trzy tryby wg stanu simple-tts (patrz kitt_state):
   idle  -> kropka + gasnący ogon jeździ prawo<->lewo
   think -> dwie kropki nerwowo gonią się (Claude pracuje)
   speak -> modulator głosu (simple-tts właśnie mówi)
 
 Przezroczyste, klik-przechodzące NSPanel na każdym ekranie, na wysokim poziomie
-z CanJoinAllSpaces + FullScreenAuxiliary, więc widać je też na Spejsie aplikacji
-pełnoekranowej. Wymaga: pyobjc-framework-Cocoa, Pillow.
-
-Uruchamiać pythonem z tymi zależnościami (patrz install_overlay.sh).
+z CanJoinAllSpaces + FullScreenAuxiliary. Wymaga: pyobjc-framework-Cocoa,
+pyobjc-framework-Quartz, Pillow.
 """
 
-import io
+import math
 import os
 import sys
 import time
@@ -28,25 +33,36 @@ from AppKit import (  # noqa: E402
     NSApplicationActivationPolicyAccessory,
     NSBackingStoreBuffered,
     NSColor,
-    NSImage,
-    NSImageScaleAxesIndependently,
-    NSImageView,
     NSPanel,
     NSScreen,
     NSScreenSaverWindowLevel,
+    NSView,
     NSWindowCollectionBehaviorCanJoinAllSpaces,
     NSWindowCollectionBehaviorFullScreenAuxiliary,
     NSWindowCollectionBehaviorStationary,
     NSWindowStyleMaskNonactivatingPanel,
 )
-from Foundation import NSData, NSMakeRect, NSObject, NSTimer  # noqa: E402
+from Foundation import NSMakeRect, NSObject, NSTimer  # noqa: E402
+from Quartz import (  # noqa: E402
+    CAKeyframeAnimation,
+    CALayer,
+    CGColorSpaceCreateDeviceRGB,
+    CGDataProviderCreateWithData,
+    CGImageCreate,
+    kCAAnimationDiscrete,
+    kCGBitmapByteOrderDefault,
+    kCGImageAlphaLast,
+)
 
 W, H = 520, 40             # rozmiar w punktach
 SCALE = 2                  # render 2x (Retina)
 Y_OFFSET = 6               # od górnej krawędzi ekranu
-FPS = 16
-MODE_CHECK_SEC = 0.20      # jak często sprawdzać stan (rzadziej niż render)
+MODE_CHECK_SEC = 0.25      # jak często sprawdzać stan (jedyny timer)
+BUILD_FPS = 16             # gęstość klatek w prekompute
+ALPHA_BOOST = 2.2          # krycie: jaśniej = bardziej kryjące
 LOG = os.path.expanduser("~/.claude/simple-tts-overlay.log")
+
+_CS = CGColorSpaceCreateDeviceRGB()
 
 
 def _log(msg):
@@ -57,11 +73,35 @@ def _log(msg):
         pass
 
 
-def pil_to_nsimage(pil_img):
-    buf = io.BytesIO()
-    pil_img.save(buf, "PNG")
-    raw = buf.getvalue()
-    return NSImage.alloc().initWithData_(NSData.dataWithBytes_length_(raw, len(raw)))
+def _mode_period(mode):
+    if mode == "idle":
+        return 2 * KF.SWEEP_SEC              # bezszwowa pętla (fala trójkątna)
+    if mode == "think":
+        return 2 * math.pi / 6.2             # okres sin(t*6.2)
+    return 2.4                               # speak: pętla ~2.4 s
+
+
+def _build_frames(mode):
+    """Renderuj jeden okres trybu -> lista CGImage. Zwraca (frames, keep_bytes,
+    period). keep_bytes trzeba utrzymać przy życiu (CGImage nie kopiuje danych)."""
+    period = _mode_period(mode)
+    pw, ph = W * SCALE, H * SCALE
+    n = max(2, round(period * BUILD_FPS))
+    frames, keep = [], []
+    for k in range(n):
+        t = k * period / n
+        frame = KF.render(pw, ph, t, mode)
+        alpha = frame.convert("L").point(lambda v: min(255, int(v * ALPHA_BOOST)))
+        rgba = frame.convert("RGBA")
+        rgba.putalpha(alpha)
+        raw = rgba.tobytes()
+        keep.append(raw)
+        prov = CGDataProviderCreateWithData(None, raw, len(raw), None)
+        cg = CGImageCreate(pw, ph, 8, 32, pw * 4, _CS,
+                           kCGImageAlphaLast | kCGBitmapByteOrderDefault,
+                           prov, None, False, 0)
+        frames.append(cg)
+    return frames, keep, period
 
 
 def make_panel():
@@ -79,11 +119,17 @@ def make_panel():
     panel.setBackgroundColor_(NSColor.clearColor())
     panel.setIgnoresMouseEvents_(True)
     panel.setHasShadow_(False)
-    iv = NSImageView.alloc().initWithFrame_(NSMakeRect(0, 0, W, H))
-    iv.setImageScaling_(NSImageScaleAxesIndependently)
-    panel.setContentView_(iv)
+
+    view = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, W, H))
+    view.setWantsLayer_(True)
+    layer = CALayer.layer()
+    layer.setFrame_(NSMakeRect(0, 0, W, H))
+    layer.setContentsGravity_("resize")
+    layer.setContentsScale_(SCALE)
+    view.layer().addSublayer_(layer)
+    panel.setContentView_(view)
     panel.orderFrontRegardless()
-    return panel, iv
+    return panel, layer
 
 
 def top_center(screen_frame):
@@ -92,50 +138,66 @@ def top_center(screen_frame):
     return x, y
 
 
-class Ticker(NSObject):
-    def tick_(self, timer):
+class Controller(NSObject):
+    def check_(self, timer):
         try:
-            now = time.monotonic()
-            if now - self.last_check >= MODE_CHECK_SEC:
-                self.last_check = now
-                self.mode = KS.current_mode()
-            if self.mode is None:                      # nakładka wyłączona
-                for _, iv in self.panels:
-                    iv.setImage_(None)
-                return
-            t = now - self.start
-            frame = KF.render(W * SCALE, H * SCALE, t, self.mode)
-            alpha = frame.convert("L").point(lambda v: min(255, int(v * 2.2)))
-            rgba = frame.convert("RGBA")
-            rgba.putalpha(alpha)
-            nsimg = pil_to_nsimage(rgba)
             screens = NSScreen.screens()
-            for i, (panel, iv) in enumerate(self.panels):
+            for i, (panel, _layer) in enumerate(self.panels):
                 if i < len(screens):
                     panel.setFrameOrigin_(top_center(screens[i].frame()))
-                iv.setImage_(nsimg)
+            mode = KS.current_mode()
+            if mode == self.mode:
+                return
+            self.mode = mode
+            self.applyMode_(mode)
         except Exception:
-            _log("tick FAILED:\n" + traceback.format_exc())
+            _log("check FAILED:\n" + traceback.format_exc())
+
+    def applyMode_(self, mode):
+        if mode is None:                         # tryb wyłączony -> nic
+            for _panel, layer in self.panels:
+                layer.removeAnimationForKey_("kitt")
+                layer.setContents_(None)
+            return
+        frames, period = self.cache[mode]
+        for _panel, layer in self.panels:
+            layer.setContents_(frames[0])
+            anim = CAKeyframeAnimation.animationWithKeyPath_("contents")
+            anim.setValues_(frames)
+            anim.setDuration_(period)
+            anim.setCalculationMode_(kCAAnimationDiscrete)
+            anim.setRepeatCount_(1e9)
+            anim.setRemovedOnCompletion_(False)
+            layer.removeAnimationForKey_("kitt")
+            layer.addAnimation_forKey_(anim, "kitt")
 
 
 def main():
     app = NSApplication.sharedApplication()
     app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
 
-    panels = []
-    for s in NSScreen.screens():
-        panel, iv = make_panel()
+    t0 = time.perf_counter()
+    cache, keepalive = {}, []
+    for mode in ("idle", "think", "speak"):
+        frames, keep, period = _build_frames(mode)
+        cache[mode] = (frames, period)
+        keepalive.append(keep)                   # utrzymaj bajty CGImage żywe
+    _log(f"prekompute {sum(len(cache[m][0]) for m in cache)} klatek w "
+         f"{(time.perf_counter() - t0) * 1000:.0f} ms")
+
+    panels = [make_panel() for _ in NSScreen.screens()]
+    for (panel, _layer), s in zip(panels, NSScreen.screens()):
         panel.setFrameOrigin_(top_center(s.frame()))
-        panels.append((panel, iv))
     _log(f"start: {len(panels)} ekran(ów)")
 
-    ticker = Ticker.alloc().init()
-    ticker.panels = panels
-    ticker.start = time.monotonic()
-    ticker.last_check = -1.0
-    ticker.mode = "idle"
+    ctrl = Controller.alloc().init()
+    ctrl.panels = panels
+    ctrl.cache = cache
+    ctrl._keepalive = keepalive
+    ctrl.mode = "__none__"
+    ctrl.check_(None)                            # ustaw tryb od razu
     NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-        1.0 / FPS, ticker, b"tick:", None, True)
+        MODE_CHECK_SEC, ctrl, b"check:", None, True)
     app.run()
 
 
