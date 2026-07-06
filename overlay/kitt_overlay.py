@@ -62,8 +62,9 @@ MODE_CHECK_SEC = 0.25
 N_LED = 31                     # nieruchome ledy
 EDGE = 16.0                    # margines na led po bokach
 LED_D = 30                     # średnica świecenia leda (pt) — nachodzą = ciągły blask
-SWEEP_SIGMA = 0.11             # szerokość świecącej głowy (w jedn. znormalizowanych)
-FLOOR = 0.05                   # tło zgaszonego leda (blisko 0 = gaśnie)
+HEAD_SIGMA = 0.035             # promień świecącej głowy-kropki (znormalizowany)
+TAIL_LEN = 0.16                # długość gasnącego ogona ZA głową
+FLOOR = 0.04                   # tło zgaszonego leda (blisko 0 = gaśnie)
 IDLE_HALF = 1.8                # sekundy na jeden przejazd L->R
 THINK_SPEEDUP = 2.6
 BUILD_FPS = 30                 # gęstość klatek krycia (gładkość)
@@ -122,8 +123,13 @@ def _head(phase):
 
 
 def _sweep_opacity(p, phase):
-    d = abs(p - _head(phase))
-    return FLOOR + (1.0 - FLOOR) * math.exp(-(d / SWEEP_SIGMA) ** 2)
+    """Jasna głowa-kropka + ogon gasnący TYLKO za nią (kierunkowo). Przód ciemny."""
+    h = _head(phase)
+    direction = 1.0 if phase < 0.5 else -1.0        # 1. połowa w prawo, 2. w lewo
+    behind = (h - p) * direction                    # >0: led jest ZA głową
+    head = math.exp(-((p - h) / HEAD_SIGMA) ** 2)   # zwarta kropka
+    tail = math.exp(-(behind / TAIL_LEN) ** 2) if behind >= 0 else 0.0
+    return FLOOR + (1.0 - FLOOR) * max(head, tail)
 
 
 def _sweep_anim(p):
