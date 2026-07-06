@@ -85,10 +85,11 @@ BAR_ALPHA = 0.12               # krycie ciemnego pasa (wariant B — delikatny �
 CELL_ALPHA = 0.18              # krycie obudów diod (bez obrysów)
 OP_EPS = 0.003                 # dirty-check: mniejszych zmian krycia nie wysyłamy
 SWEEP_HALF = 0.44              # połowa szerokości przejazdu (0.5 = do krawędzi)
-SPEED_IDLE = 0.30              # wolny przejazd w idle (myśli = szybszy)
+SPEED_IDLE = 0.18              # wolny przejazd w idle (myśli = szybszy)
 SPEED_THINK = 0.52             # wolniejszy przejazd
 EASE_TAU = 0.22                # wygładzenie dochodzenia do celu (przyspieszanie)
-TAIL_TAU = 0.10                # krótszy ogon (szybciej znika)
+TAIL_TAU = 0.10                # ogon w idle (krótszy, szybciej znika)
+TAIL_TAU_THINK = 0.17          # ogon w think (dłuższy — szybszy przejazd, czytelniejszy ślad)
 SPEAK_TAU = 0.09               # spokojniejszy modulator (mniej migotania)
 LEVEL_TAU = 0.07               # wygładzanie głośności w czasie (anty-migotanie)
 SPEAK_BASE = 0.03              # min. rozstaw modulatora (cisza)
@@ -360,7 +361,13 @@ class Controller(NSObject):
                 level_t = 0.0
             self.level += (level_t - self.level) * (1.0 - math.exp(-dt / LEVEL_TAU))
             reach = (SPEAK_BASE + self.level * SPEAK_GAIN) * self.bloom
-            decay = math.exp(-dt / (SPEAK_TAU if self.mode == "speak" else TAIL_TAU))
+            if self.mode == "speak":
+                tail_tau = SPEAK_TAU
+            elif self.mode == "think":
+                tail_tau = TAIL_TAU_THINK
+            else:
+                tail_tau = TAIL_TAU
+            decay = math.exp(-dt / tail_tau)
             led = self.led
             for i, p in enumerate(_POS):
                 d = p - hx                          # modulator „rozkwita" wokół głowy
