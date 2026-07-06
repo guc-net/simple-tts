@@ -10,7 +10,7 @@ Jedna spójna symulacja klatka-po-klatce (nie osobne animacje per stan):
   * ledy stoją w miejscu; sterujemy tylko ich kryciem.
 
 Stany (kitt_state):
-  idle  -> jasna kropka spoczywa na środku
+  idle  -> wolny przejazd prawo<->lewo (myśli = szybciej)
   think -> kropka rozpędza się i przejeżdża prawo<->lewo (ogon gaśnie za nią)
   speak -> na środku, symetryczny rozbłysk w rytm głośności głosu (obwiednia)
   None  -> wygaszone
@@ -69,7 +69,7 @@ HEAD_SIGMA = 0.07              # ile cel obejmuje świecąca głowa
 CORE_THRESH = 0.55             # od jakiej jasności zapala się biało-gorący rdzeń
 CELL_OPACITY = 0.12            # krycie ciemnej obudowy — mocno prześwituje tło (overlay)
 SWEEP_HALF = 0.44              # połowa szerokości przejazdu (0.5 = do krawędzi)
-SPEED_IDLE = 0.0               # w ciszy faza zamrożona -> kropka stoi na środku
+SPEED_IDLE = 0.30              # wolny przejazd w idle (myśli = szybszy)
 SPEED_THINK = 0.52             # wolniejszy przejazd
 EASE_TAU = 0.22                # wygładzenie dochodzenia do celu (przyspieszanie)
 TAIL_TAU = 0.10                # krótszy ogon (szybciej znika)
@@ -220,8 +220,8 @@ class Controller(NSObject):
         elif mode == "speak":
             self.amp_t, self.speed_t, self.bloom_t = 0.0, SPEED_IDLE, 1.0
             self.speak = _read_envelope()
-        else:                                     # idle
-            self.amp_t, self.speed_t, self.bloom_t = 0.0, SPEED_IDLE, 0.0
+        else:                                     # idle — wolny przejazd
+            self.amp_t, self.speed_t, self.bloom_t = 1.0, SPEED_IDLE, 0.0
 
     def render_(self, timer):
         try:
