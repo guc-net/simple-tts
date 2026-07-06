@@ -14,7 +14,8 @@ import math
 
 from PIL import Image, ImageDraw
 
-CORE = (255, 55, 35)      # kolor świecącego rdzenia
+CORE = (225, 28, 10)      # głęboka nasycona czerwień diod (jak w KITT)
+HOT = (255, 116, 32)      # rozgrzany segment: intensywny pomarańczowo-czerwony
 
 
 def dot_sprite(px, boost=1.6):
@@ -39,10 +40,10 @@ def dot_sprite(px, boost=1.6):
     return img
 
 
-def hot_cell_sprite(w, h, color=(255, 240, 225)):
-    """Biało-gorąca cała cela (RGBA): zaokrąglony prostokąt, pełna biel w środku,
-    czerwieniejący, miękki brzeg. Widoczna dopiero przy dużej jasności — cela
-    „rozgrzewa się do białości" jak w referencji."""
+def hot_cell_sprite(w, h, color=HOT):
+    """Rozgrzana cała cela (RGBA): zaokrąglony prostokąt, intensywny
+    pomarańczowo-czerwony środek przechodzący w głęboką czerwień na brzegu.
+    Widoczna dopiero przy dużej jasności — jak najjaśniejsze segmenty w KITT."""
     img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     p = img.load()
     cx, cy = w / 2.0, h / 2.0
@@ -59,11 +60,11 @@ def hot_cell_sprite(w, h, color=(255, 240, 225)):
                 a = 0.0
             else:
                 a = min(1.0, -dist / soft)
-            aa = a * a
-            # środek biały, brzeg przechodzi w czerwień poświaty
-            cr = int(color[0] * aa + CORE[0] * a * (1 - aa))
-            cg = int(color[1] * aa + CORE[1] * a * (1 - aa))
-            cb = int(color[2] * aa + CORE[2] * a * (1 - aa))
+            # pomarańcz tylko w głębi celi; brzegi w głęboką czerwień poświaty
+            t = max(0.0, (a - 0.45) / 0.55) ** 1.6
+            cr = int(color[0] * t + CORE[0] * (1 - t))
+            cg = int(color[1] * t + CORE[1] * (1 - t))
+            cb = int(color[2] * t + CORE[2] * (1 - t))
             p[x, y] = (min(255, cr), min(255, cg), min(255, cb),
                        int(255 * a))
     return img
