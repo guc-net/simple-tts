@@ -36,9 +36,29 @@ def _read_json(path):
         return None
 
 
+# Nakładka woła current_mode() kilka razy na sekundę — config i state parsujemy
+# tylko, gdy plik faktycznie się zmienił (stat zamiast open+json za każdym razem).
+_JSON_CACHE = {}
+
+
+def _read_json_cached(path):
+    try:
+        st = os.stat(path)
+        key = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        _JSON_CACHE.pop(path, None)
+        return None
+    hit = _JSON_CACHE.get(path)
+    if hit is not None and hit[0] == key:
+        return hit[1]
+    data = _read_json(path)
+    _JSON_CACHE[path] = (key, data)
+    return data
+
+
 def overlay_enabled():
     """True gdy plugin skonfigurowany i tryb Knight Rider włączony."""
-    cfg = _read_json(CONFIG_PATH)
+    cfg = _read_json_cached(CONFIG_PATH)
     if cfg is None:
         return False
     return bool(cfg.get("knight_rider", True))
@@ -97,7 +117,7 @@ def _pgrep_speaking():
 def _tts_active():
     """True gdy żyje proces TTS zapisany przez simple-tts (dowolna sesja).
     Tania brama: w idle nie ma po co skanować procesów."""
-    st = _read_json(STATE_PATH)
+    st = _read_json_cached(STATE_PATH)
     pid = st.get("pid") if st else None
     if not pid:
         return False

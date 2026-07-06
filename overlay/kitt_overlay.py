@@ -13,7 +13,15 @@ Stany (kitt_state):
   idle  -> wolny przejazd prawo<->lewo (myśli = szybciej)
   think -> kropka rozpędza się i przejeżdża prawo<->lewo (ogon gaśnie za nią)
   speak -> na środku, symetryczny rozbłysk w rytm głośności głosu (obwiednia)
-  None  -> wygaszone
+  None  -> wygaszone (panel schodzi z ekranu, timer zwalnia do 1 s)
+
+Wydajność (WindowServer to główny koszt overlayu, nie Python):
+  * ZERO filtrów kompozycji (additionCompositing wymuszał offscreen rendering
+    w WindowServerze przy każdej klatce) — zwykłe source-over,
+  * cała statyka (ciemny pas + obudowy diod) wypalona w JEDEN obraz/warstwę,
+  * dirty-check: setOpacity_ tylko gdy wartość realnie się zmieniła; klatka bez
+    zmian nie otwiera nawet CATransaction (w ciszy speak: zero pracy),
+  * po wygaszeniu panele są orderOut_ a szybki timer staje — zostaje wolny poll.
 
 Pływa nad pełnym ekranem, pojedyncza instancja. Wymaga pyobjc Cocoa+Quartz, Pillow.
 """
@@ -59,15 +67,20 @@ from Quartz import (  # noqa: E402
 W, H = 520, 40
 SCALE = 2
 Y_OFFSET = 6
-RENDER_FPS = 28
+FPS_SWEEP = 21                 # przejazd idle/think — wolniejszy ruch, mniej klatek
+FPS_SPEAK = 28                 # modulator mowy (obwiednia ma krok 0.04 s)
 MODE_CHECK_SEC = 0.18
+SCREEN_CHECK_SEC = 2.0
+POLL_SEC = 1.0                 # wolny timer, gdy nakładka wygaszona
 N_LED = 13                     # dyskretne diody (jak segmenty w referencji)
 EDGE = 22.0
-FLOOR = 0.02                   # krycie zgaszonej poświaty (cela zostaje ciemna)
+FLOOR = 0.10                   # krycie zgaszonej diody (kropka ledwo się tli)
 HEAD_BRIGHT = 1.0
 HEAD_SIGMA = 0.07              # ile cel obejmuje świecąca głowa
-CORE_THRESH = 0.55             # od jakiej jasności zapala się biało-gorący rdzeń
-CELL_OPACITY = 0.12            # krycie ciemnej obudowy — mocno prześwituje tło (overlay)
+CORE_THRESH = 0.55             # od jakiej jasności cela rozgrzewa się do bieli
+BAR_ALPHA = 0.12               # krycie ciemnego pasa (wariant B — delikatny ślad)
+CELL_ALPHA = 0.18              # krycie obudów diod (bez obrysów)
+OP_EPS = 0.003                 # dirty-check: mniejszych zmian krycia nie wysyłamy
 SWEEP_HALF = 0.44              # połowa szerokości przejazdu (0.5 = do krawędzi)
 SPEED_IDLE = 0.30              # wolny przejazd w idle (myśli = szybszy)
 SPEED_THINK = 0.52             # wolniejszy przejazd
@@ -92,7 +105,6 @@ _SPACING = (W - 2 * EDGE) / (N_LED - 1)
 CELL_W = _SPACING * 0.90
 CELL_H = H * 0.72
 GLOW_D = _SPACING * 0.86
-CORE_D = _SPACING * 0.44
 
 
 def _log(msg):
@@ -133,11 +145,14 @@ def _cg(pil):
 
 
 def _sprites():
-    """CGImage poświaty, rdzenia i obudowy celi (+ bajty do utrzymania)."""
+    """CGImage poświaty, gorącej celi i statycznej listwy (+ bajty do utrzymania)."""
     glow, r1 = _cg(KF.dot_sprite(int(GLOW_D * SCALE), boost=1.5))
-    core, r2 = _cg(KF.core_sprite(int(CORE_D * SCALE)))
-    cell, r3 = _cg(KF.cell_sprite(int(CELL_W * SCALE), int(CELL_H * SCALE)))
-    return {"glow": glow, "core": core, "cell": cell}, [r1, r2, r3]
+    hot, r2 = _cg(KF.hot_cell_sprite(int(CELL_W * SCALE), int(CELL_H * SCALE)))
+    backing, r3 = _cg(KF.backing_sprite(
+        W * SCALE, H * SCALE, [x * SCALE for x in _XS],
+        CELL_W * SCALE, CELL_H * SCALE,
+        bar_alpha=BAR_ALPHA, cell_alpha=CELL_ALPHA))
+    return {"glow": glow, "hot": hot, "backing": backing}, [r1, r2, r3]
 
 
 def _read_envelope():
@@ -150,15 +165,13 @@ def _read_envelope():
         return None
 
 
-def _mk_layer(contents, w, h, x, additive):
+def _mk_layer(contents, w, h, x, y=_MIDY):
     lyr = CALayer.layer()
     lyr.setBounds_(((0.0, 0.0), (w, h)))
-    lyr.setPosition_((x, _MIDY))
+    lyr.setPosition_((x, y))
     lyr.setContentsGravity_("resize")
     lyr.setContentsScale_(SCALE)
     lyr.setContents_(contents)
-    if additive:
-        lyr.setCompositingFilter_("additionCompositing")
     return lyr
 
 
@@ -183,16 +196,15 @@ def make_panel(spr):
     container = CALayer.layer()
     container.setFrame_(NSMakeRect(0, 0, W, H))
     container.setOpacity_(0.0)
+    # statyka: ciemny pas + obudowy — jeden obraz, jedna warstwa, zero zmian
+    container.addSublayer_(_mk_layer(spr["backing"], W, H, W / 2.0))
     glows, cores = [], []
-    for x in _XS:                                   # obudowa -> poświata -> rdzeń
-        cell = _mk_layer(spr["cell"], CELL_W, CELL_H, x, False)
-        cell.setOpacity_(CELL_OPACITY)              # mocno prześwituje (overlay)
-        container.addSublayer_(cell)
-        g = _mk_layer(spr["glow"], GLOW_D, GLOW_D, x, True)
+    for x in _XS:                                   # poświata -> gorąca cela
+        g = _mk_layer(spr["glow"], GLOW_D, GLOW_D, x)
         g.setOpacity_(FLOOR)
         container.addSublayer_(g)
         glows.append(g)
-        c = _mk_layer(spr["core"], CORE_D, CORE_D, x, True)
+        c = _mk_layer(spr["hot"], CELL_W, CELL_H, x)
         c.setOpacity_(0.0)
         container.addSublayer_(c)
         cores.append(c)
@@ -223,6 +235,73 @@ class Controller(NSObject):
         else:                                     # idle — wolny przejazd
             self.amp_t, self.speed_t, self.bloom_t = 1.0, SPEED_IDLE, 0.0
 
+    # --- timery: szybki render <-> wolny poll po wygaszeniu -----------------
+    def startFast(self):
+        fps = FPS_SPEAK if self.mode == "speak" else FPS_SWEEP
+        if self.fast_timer is not None and self.fast_fps == fps:
+            return
+        if self.slow_timer is not None:
+            self.slow_timer.invalidate()
+            self.slow_timer = None
+        if self.fast_timer is not None:
+            self.fast_timer.invalidate()
+        else:
+            self.t = time.monotonic()
+        self.fast_fps = fps
+        self.fast_timer = (
+            NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                1.0 / fps, self, b"render:", None, True))
+        self.fast_timer.setTolerance_(0.2 / fps)
+
+    def startSlow(self):
+        if self.slow_timer is not None:
+            return
+        if self.fast_timer is not None:
+            self.fast_timer.invalidate()
+            self.fast_timer = None
+        self.slow_timer = (
+            NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                POLL_SEC, self, b"poll:", None, True))
+        self.slow_timer.setTolerance_(POLL_SEC * 0.2)
+
+    def hidePanels(self):
+        for ent in self.entries:
+            ent["container"].setOpacity_(0.0)
+            ent["panel"].orderOut_(None)
+        self.applied_vis = 0.0
+        self.led = [0.0] * N_LED
+        self.applied_glow = [None] * N_LED        # wymuś pełny zapis po wybudzeniu
+        self.applied_core = [None] * N_LED
+
+    def poll_(self, timer):
+        """Wygaszona nakładka: tylko sprawdzanie stanu, zero renderu."""
+        try:
+            m = KS.current_mode()
+            if m is None:
+                return
+            self.mode = m
+            self.enterMode_(m)
+            self.lastcheck = time.monotonic()
+            self.reposition_(True)
+            for ent in self.entries:
+                ent["panel"].orderFrontRegardless()
+            self.startFast()
+        except Exception:
+            _log("poll FAILED:\n" + traceback.format_exc())
+
+    def reposition_(self, force):
+        now = time.monotonic()
+        if not force and now - self.lastscreens < SCREEN_CHECK_SEC:
+            return
+        self.lastscreens = now
+        screens = NSScreen.screens()
+        for i, ent in enumerate(self.entries):
+            if i < len(screens):
+                org = top_center(screens[i].frame())
+                if org != ent.get("origin"):
+                    ent["origin"] = org
+                    ent["panel"].setFrameOrigin_(org)
+
     def render_(self, timer):
         try:
             now = time.monotonic()
@@ -236,18 +315,24 @@ class Controller(NSObject):
                 if m != self.mode:
                     self.mode = m
                     self.enterMode_(m)
-                screens = NSScreen.screens()
-                for i, ent in enumerate(self.entries):
-                    if i < len(screens):
-                        ent["panel"].setFrameOrigin_(top_center(screens[i].frame()))
+                    self.startFast()          # speak = 28 fps, reszta 21
+                self.reposition_(False)
 
             k = 1.0 - math.exp(-dt / EASE_TAU)
             self.amp += (self.amp_t - self.amp) * k
             self.speed += (self.speed_t - self.speed) * k
             self.vis += (self.vis_t - self.vis) * k
+            if abs(self.vis - self.vis_t) < 0.004:
+                self.vis = self.vis_t
             self.bloom += (self.bloom_t - self.bloom) * k
             self.phase += self.speed * dt
             hx = 0.5 + self.amp * SWEEP_HALF * _tri(self.phase)
+
+            # zgaszone i wyciemnione do zera -> panele z ekranu, wolny poll
+            if self.mode is None and self.vis == 0.0:
+                self.hidePanels()
+                self.startSlow()
+                return
 
             if self.mode == "speak":
                 if self.speak:
@@ -271,20 +356,36 @@ class Controller(NSObject):
                 # poprzedniej wartości. max() zamiast if — inaczej przy des==led
                 # led skakał des<->des*decay co klatkę (migotanie w spoczynku).
                 led[i] = des if des > led[i] * decay else led[i] * decay
+                if led[i] < 0.001:
+                    led[i] = 0.0
+
+            # dirty-check: wysyłamy tylko realne zmiany; brak zmian = brak transakcji
+            ag, ac = self.applied_glow, self.applied_core
+            updates = []
+            for i, v in enumerate(led):
+                go = FLOOR + (1.0 - FLOOR) * _clamp(v)
+                co = _clamp((_clamp(v) - CORE_THRESH) / (1.0 - CORE_THRESH))
+                if ag[i] is None or abs(go - ag[i]) > OP_EPS:
+                    ag[i] = go
+                    updates.append((i, 0, go))
+                if ac[i] is None or abs(co - ac[i]) > OP_EPS \
+                        or (co == 0.0 and ac[i] != 0.0):
+                    ac[i] = co
+                    updates.append((i, 1, co))
+            vis_changed = self.vis != self.applied_vis
+            if not updates and not vis_changed:
+                return
 
             CATransaction.begin()
             CATransaction.setDisableActions_(True)
-            vis = self.vis
-            glow_op = [FLOOR + (1.0 - FLOOR) * _clamp(v) for v in led]
-            core_op = [_clamp((_clamp(v) - CORE_THRESH) / (1.0 - CORE_THRESH))
-                       for v in led]
             for ent in self.entries:
-                ent["container"].setOpacity_(vis)
+                if vis_changed:
+                    ent["container"].setOpacity_(self.vis)
                 glows, cores = ent["glows"], ent["cores"]
-                for i in range(N_LED):
-                    glows[i].setOpacity_(glow_op[i])
-                    cores[i].setOpacity_(core_op[i])
+                for i, which, val in updates:
+                    (glows if which == 0 else cores)[i].setOpacity_(val)
             CATransaction.commit()
+            self.applied_vis = self.vis
         except Exception:
             _log("render FAILED:\n" + traceback.format_exc())
 
@@ -301,15 +402,19 @@ def main():
     entries = []
     for s in NSScreen.screens():
         panel, container, glows, cores = make_panel(spr)
-        panel.setFrameOrigin_(top_center(s.frame()))
+        origin = top_center(s.frame())
+        panel.setFrameOrigin_(origin)
         entries.append({"panel": panel, "container": container,
-                        "glows": glows, "cores": cores})
+                        "glows": glows, "cores": cores, "origin": origin})
     _log(f"start (celki): {len(entries)} ekran(ów), {N_LED} diod")
 
     ctrl = Controller.alloc().init()
     ctrl.entries = entries
     ctrl._raw = keep
     ctrl.led = [FLOOR] * N_LED
+    ctrl.applied_glow = [None] * N_LED
+    ctrl.applied_core = [None] * N_LED
+    ctrl.applied_vis = -1.0
     ctrl.mode = "__init__"
     ctrl.speak = None
     ctrl.amp = ctrl.amp_t = 0.0
@@ -320,8 +425,11 @@ def main():
     ctrl.phase = 0.0
     ctrl.t = time.monotonic()
     ctrl.lastcheck = -1.0
-    NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-        1.0 / RENDER_FPS, ctrl, b"render:", None, True)
+    ctrl.lastscreens = -1.0
+    ctrl.fast_timer = None
+    ctrl.fast_fps = 0
+    ctrl.slow_timer = None
+    ctrl.startFast()
     app.run()
 
 
