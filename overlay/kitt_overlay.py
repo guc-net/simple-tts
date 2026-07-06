@@ -59,7 +59,7 @@ from Quartz import (  # noqa: E402
 W, H = 520, 40
 SCALE = 2
 Y_OFFSET = 6
-RENDER_FPS = 30
+RENDER_FPS = 40
 MODE_CHECK_SEC = 0.18
 N_LED = 31
 EDGE = 16.0
@@ -164,6 +164,7 @@ def make_panel(cgimg):
         led.setContentsScale_(SCALE)
         led.setContents_(cgimg)
         led.setOpacity_(FLOOR)
+        led.setCompositingFilter_("additionCompositing")   # blask się sumuje
         container.addSublayer_(led)
         leds.append(led)
     view.layer().addSublayer_(container)
@@ -186,12 +187,12 @@ class Controller(NSObject):
             return
         self.vis_t = 1.0
         if mode == "think":
-            self.amp_t, self.speed_t = 1.0, SPEED_THINK
+            self.amp_t, self.speed_t, self.bloom_t = 1.0, SPEED_THINK, 0.0
         elif mode == "speak":
-            self.amp_t, self.speed_t = 0.0, SPEED_IDLE
+            self.amp_t, self.speed_t, self.bloom_t = 0.0, SPEED_IDLE, 1.0
             self.speak = _read_envelope()
         else:                                     # idle
-            self.amp_t, self.speed_t = 0.0, SPEED_IDLE
+            self.amp_t, self.speed_t, self.bloom_t = 0.0, SPEED_IDLE, 0.0
 
     def render_(self, timer):
         try:
@@ -215,10 +216,10 @@ class Controller(NSObject):
             self.amp += (self.amp_t - self.amp) * k
             self.speed += (self.speed_t - self.speed) * k
             self.vis += (self.vis_t - self.vis) * k
+            self.bloom += (self.bloom_t - self.bloom) * k
             self.phase += self.speed * dt
             hx = 0.5 + self.amp * SWEEP_HALF * _tri(self.phase)
 
-            led = self.led
             if self.mode == "speak":
                 if self.speak:
                     env, sdt, start = self.speak
@@ -226,16 +227,17 @@ class Controller(NSObject):
                     level = env[idx] if 0 <= idx < len(env) else 0.0
                 else:
                     level = 0.5 + 0.5 * math.sin(now * 6.0)
-                reach = SPEAK_BASE + level * SPEAK_GAIN
-                fd = math.exp(-dt / SPEAK_TAU)
-                for i, p in enumerate(_POS):
-                    des = _clamp((reach - abs(p - 0.5)) / SPEAK_EDGE) * HEAD_BRIGHT
-                    led[i] = des if des > led[i] else led[i] * fd
             else:
-                decay = math.exp(-dt / TAIL_TAU)
-                for i, p in enumerate(_POS):
-                    g = HEAD_BRIGHT * math.exp(-((p - hx) / HEAD_SIGMA) ** 2)
-                    led[i] = g if g > led[i] else led[i] * decay
+                level = 0.0
+            reach = (SPEAK_BASE + level * SPEAK_GAIN) * self.bloom
+            decay = math.exp(-dt / (SPEAK_TAU if self.mode == "speak" else TAIL_TAU))
+            led = self.led
+            for i, p in enumerate(_POS):
+                d = p - hx                          # modulator „rozkwita" wokół głowy
+                head = HEAD_BRIGHT * math.exp(-(d / HEAD_SIGMA) ** 2)
+                flare = _clamp((reach - abs(d)) / SPEAK_EDGE) * HEAD_BRIGHT
+                des = head if head > flare else flare
+                led[i] = des if des > led[i] else led[i] * decay
 
             CATransaction.begin()
             CATransaction.setDisableActions_(True)
@@ -276,6 +278,7 @@ def main():
     ctrl.amp = ctrl.amp_t = 0.0
     ctrl.speed = ctrl.speed_t = SPEED_IDLE
     ctrl.vis = ctrl.vis_t = 0.0
+    ctrl.bloom = ctrl.bloom_t = 0.0
     ctrl.phase = 0.0
     ctrl.t = time.monotonic()
     ctrl.lastcheck = -1.0
