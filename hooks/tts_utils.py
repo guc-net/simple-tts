@@ -374,9 +374,11 @@ def speak(text, priority=False, force=False):
                 "say_voice": voice,
                 "say_rate": rate,
                 "cache_max_mb": config.get('cache_max_mb', 100),
-                # Syrena KITT-a tylko w trybie Knight Rider.
+                # Syrena i obniżony głos KITT-a tylko w trybie Knight Rider
+                # (chorus na miksie dobrany razem z tym pitchem, patrz edge_speak.py).
                 "intro_sound": (config.get('intro_sound', 'kitt')
                                 if config.get('knight_rider', True) else 'none'),
+                "edge_pitch": ("-20Hz" if config.get('knight_rider', True) else "+0Hz"),
             })
             proc = subprocess.Popen(
                 [sys.executable, EDGE_SPEAK_PATH],

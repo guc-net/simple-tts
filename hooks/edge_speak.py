@@ -23,8 +23,8 @@ sound's quiet valley (see _mix_kitt) — the mix is done at playback with ffmpeg
 so the on-disk cache always holds the plain speech and the effect toggles
 instantly with config. Missing ffmpeg / sound file → the plain speech plays.
 
-Payload keys: edge_voice, edge_rate, text, say_voice, say_rate, cache_max_mb,
-intro_sound.
+Payload keys: edge_voice, edge_rate, edge_pitch, text, say_voice, say_rate,
+cache_max_mb, intro_sound.
 """
 
 import json
@@ -140,6 +140,9 @@ _PERIOD = 1.28      # KITT loop cycle length
 _V0 = 0.04          # time of the first valley
 _MIN_OUTRO = 0.35   # minimum tail after speech before the ending valley
 _FADE = 0.10        # fade-to-zero at the very end
+# Bardzo delikatny chorus na głosie w miksie KITT — syntetyczny połysk bez
+# zniekształcenia (dobrany razem z pitchem -20Hz syntezy, patrz edge_pitch).
+_CHORUS = "chorus=0.7:0.9:55:0.4:0.25:2"
 
 
 def _mix_kitt(speech_path, payload):
@@ -169,7 +172,8 @@ def _mix_kitt(speech_path, payload):
         f"[0:a]aformat=sample_rates=44100:channel_layouts=stereo,"
         f"atrim=0:{end:.3f},asetpts=PTS-STARTPTS,volume=1.7,"
         f"afade=t=out:st={fade_start:.3f}:d={_FADE}[kitt];"
-        f"[1:a]aformat=sample_rates=44100:channel_layouts=stereo,volume=1.3,"
+        f"[1:a]{_CHORUS},"
+        f"aformat=sample_rates=44100:channel_layouts=stereo,volume=1.3,"
         f"adelay={delay_ms}|{delay_ms},apad=whole_dur={end:.3f},asplit=2[sc][sp];"
         f"[kitt][sc]sidechaincompress=threshold=0.04:ratio=9:attack=15:"
         f"release=250:makeup=1[duck];"
@@ -271,6 +275,7 @@ def main():
                 ['uvx', 'edge-tts',
                  '--voice', payload['edge_voice'],
                  '--rate', payload.get('edge_rate', '+0%'),
+                 '--pitch', payload.get('edge_pitch', '+0Hz'),
                  '--text', text,
                  '--write-media', tmp],
                 capture_output=True, timeout=SYNTH_TIMEOUT,

@@ -3,8 +3,8 @@
 On-disk audio cache for simple-tts' edge engine, with usage metadata and
 size-based eviction.
 
-Each synthesized phrase is stored as `<sha256(engine,voice,rate,text)>.mp3` in
-CACHE_DIR. A single `index.json` (guarded by flock) records per-entry metadata:
+Each synthesized phrase is stored as `<sha256(engine,voice,rate,pitch,text)>.mp3`
+in CACHE_DIR. A single `index.json` (guarded by flock) records per-entry metadata:
 the spoken text, voice, rate, play count, and created / last-used timestamps.
 
 Eviction is driven by a TOTAL SIZE budget (`cache_max_mb`), not a file count:
@@ -28,9 +28,10 @@ DEFAULT_MAX_MB = 100
 
 
 def key_for(payload):
-    """Content-addressed key: SHA-256 over engine, voice, rate, text."""
+    """Content-addressed key: SHA-256 over engine, voice, rate, pitch, text."""
     parts = ["edge", payload.get("edge_voice", ""),
-             payload.get("edge_rate", "+0%"), payload.get("text", "")]
+             payload.get("edge_rate", "+0%"), payload.get("edge_pitch", "+0Hz"),
+             payload.get("text", "")]
     return hashlib.sha256("\x00".join(parts).encode("utf-8")).hexdigest()
 
 
