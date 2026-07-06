@@ -44,6 +44,7 @@ from AppKit import (  # noqa: E402
 )
 from Foundation import NSMakeRect, NSObject, NSTimer  # noqa: E402
 from Quartz import (  # noqa: E402
+    CABasicAnimation,
     CAKeyframeAnimation,
     CALayer,
     CGColorSpaceCreateDeviceRGB,
@@ -61,6 +62,7 @@ MODE_CHECK_SEC = 0.25      # jak często sprawdzać stan (jedyny timer)
 BUILD_FPS = 16             # gęstość klatek w prekompute
 THINK_SPEEDUP = 2.6        # „myśli" to ta sama kropka co idle, tylko szybciej
 ALPHA_BOOST = 2.2          # krycie: jaśniej = bardziej kryjące
+CROSSFADE_SEC = 0.35       # płynne przenikanie między animacjami stanów
 LOG = os.path.expanduser("~/.claude/simple-tts-overlay.log")
 LOCK_PATH = os.path.expanduser("~/.claude/simple-tts-overlay.lock")
 
@@ -136,14 +138,19 @@ def make_panel():
 
     view = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, W, H))
     view.setWantsLayer_(True)
-    layer = CALayer.layer()
-    layer.setFrame_(NSMakeRect(0, 0, W, H))
-    layer.setContentsGravity_("resize")
-    layer.setContentsScale_(SCALE)
-    view.layer().addSublayer_(layer)
+    # dwie nakładające się warstwy A/B — zmiana stanu przenika A<->B (crossfade)
+    layers = []
+    for _ in range(2):
+        lyr = CALayer.layer()
+        lyr.setFrame_(NSMakeRect(0, 0, W, H))
+        lyr.setContentsGravity_("resize")
+        lyr.setContentsScale_(SCALE)
+        lyr.setOpacity_(0.0)
+        view.layer().addSublayer_(lyr)
+        layers.append(lyr)
     panel.setContentView_(view)
     panel.orderFrontRegardless()
-    return panel, layer
+    return panel, layers
 
 
 def top_center(screen_frame):
@@ -152,13 +159,35 @@ def top_center(screen_frame):
     return x, y
 
 
+def _fade(layer, to):
+    """Płynnie zmień krycie warstwy do `to` (od bieżącego, widocznego stanu)."""
+    pres = layer.presentationLayer()
+    frm = pres.opacity() if pres is not None else layer.opacity()
+    anim = CABasicAnimation.animationWithKeyPath_("opacity")
+    anim.setFromValue_(frm)
+    anim.setToValue_(to)
+    anim.setDuration_(CROSSFADE_SEC)
+    layer.setOpacity_(to)
+    layer.addAnimation_forKey_(anim, "fade")
+
+
+def _kitt_anim(frames, period):
+    anim = CAKeyframeAnimation.animationWithKeyPath_("contents")
+    anim.setValues_(frames)
+    anim.setDuration_(period)
+    anim.setCalculationMode_(kCAAnimationDiscrete)
+    anim.setRepeatCount_(1e9)
+    anim.setRemovedOnCompletion_(False)
+    return anim
+
+
 class Controller(NSObject):
     def check_(self, timer):
         try:
             screens = NSScreen.screens()
-            for i, (panel, _layer) in enumerate(self.panels):
+            for i, ent in enumerate(self.entries):
                 if i < len(screens):
-                    panel.setFrameOrigin_(top_center(screens[i].frame()))
+                    ent["panel"].setFrameOrigin_(top_center(screens[i].frame()))
             mode = KS.current_mode()
             if mode == self.mode:
                 return
@@ -168,22 +197,20 @@ class Controller(NSObject):
             _log("check FAILED:\n" + traceback.format_exc())
 
     def applyMode_(self, mode):
-        if mode is None:                         # tryb wyłączony -> nic
-            for _panel, layer in self.panels:
-                layer.removeAnimationForKey_("kitt")
-                layer.setContents_(None)
-            return
-        frames, period = self.cache[mode]
-        for _panel, layer in self.panels:
-            layer.setContents_(frames[0])
-            anim = CAKeyframeAnimation.animationWithKeyPath_("contents")
-            anim.setValues_(frames)
-            anim.setDuration_(period)
-            anim.setCalculationMode_(kCAAnimationDiscrete)
-            anim.setRepeatCount_(1e9)
-            anim.setRemovedOnCompletion_(False)
-            layer.removeAnimationForKey_("kitt")
-            layer.addAnimation_forKey_(anim, "kitt")
+        for ent in self.entries:
+            a = ent["layers"][ent["active"]]
+            b = ent["layers"][1 - ent["active"]]
+            if mode is None:                         # wyłączone -> zgaś oba
+                _fade(a, 0.0)
+                _fade(b, 0.0)
+                continue
+            frames, period = self.cache[mode]
+            b.setContents_(frames[0])
+            b.removeAnimationForKey_("kitt")
+            b.addAnimation_forKey_(_kitt_anim(frames, period), "kitt")
+            _fade(b, 1.0)                             # nowy stan wchodzi...
+            _fade(a, 0.0)                             # ...stary wychodzi
+            ent["active"] = 1 - ent["active"]
 
 
 def main():
@@ -208,13 +235,15 @@ def main():
     _log(f"prekompute {len(idle_frames) + len(speak_frames)} klatek w "
          f"{(time.perf_counter() - t0) * 1000:.0f} ms")
 
-    panels = [make_panel() for _ in NSScreen.screens()]
-    for (panel, _layer), s in zip(panels, NSScreen.screens()):
+    entries = []
+    for s in NSScreen.screens():
+        panel, layers = make_panel()
         panel.setFrameOrigin_(top_center(s.frame()))
-    _log(f"start: {len(panels)} ekran(ów)")
+        entries.append({"panel": panel, "layers": layers, "active": 0})
+    _log(f"start: {len(entries)} ekran(ów)")
 
     ctrl = Controller.alloc().init()
-    ctrl.panels = panels
+    ctrl.entries = entries
     ctrl.cache = cache
     ctrl._keepalive = keepalive
     ctrl.mode = "__none__"
