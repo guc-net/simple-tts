@@ -15,8 +15,9 @@ from datetime import datetime
 # Config file location
 CONFIG_PATH = os.path.expanduser("~/.claude/simple-tts-config.json")
 STATE_PATH = os.path.expanduser("~/.claude/simple-tts-state.json")
-# "Claude pracuje" dla nakładki KITT: '1' od UserPromptSubmit do Stop.
-BUSY_PATH = os.path.expanduser("~/.claude/simple-tts-busy")
+# "Sesja pracuje" dla nakładki KITT: jeden plik-znacznik na sesję (touch od
+# UserPromptSubmit, rm od Stop). Katalog, bo Claude może chodzić w kilku sesjach.
+BUSY_DIR = os.path.expanduser("~/.claude/simple-tts-busy.d")
 USER_PHONETICS_PATH = os.path.expanduser("~/.claude/simple-tts-phonetics.json")
 PHONETICS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "phonetics")
 EDGE_SPEAK_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "edge_speak.py")
@@ -285,12 +286,25 @@ def _is_our_tts(pid):
         return False
 
 
-def set_busy(busy):
-    """Zapisz stan 'Claude pracuje' dla nakładki KITT (tryb 'think').
-    UserPromptSubmit -> True, Stop -> False. Ciche przy błędzie zapisu."""
+def _busy_marker(session_id):
+    safe = "".join(c for c in str(session_id or "default")
+                   if c.isalnum() or c in "-_.") or "default"
+    return os.path.join(BUSY_DIR, safe)
+
+
+def set_session_busy(session_id, busy):
+    """Ustaw/zdejmij znacznik 'ta sesja pracuje' (tryb 'think' nakładki).
+    UserPromptSubmit -> busy=True, Stop -> busy=False. Ciche przy błędzie."""
     try:
-        with open(BUSY_PATH, "w") as f:
-            f.write("1" if busy else "0")
+        if busy:
+            os.makedirs(BUSY_DIR, exist_ok=True)
+            with open(_busy_marker(session_id), "w") as f:
+                f.write(str(int(time.time())))
+        else:
+            try:
+                os.remove(_busy_marker(session_id))
+            except FileNotFoundError:
+                pass
     except OSError:
         pass
 

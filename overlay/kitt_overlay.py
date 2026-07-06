@@ -18,7 +18,6 @@ z CanJoinAllSpaces + FullScreenAuxiliary. Wymaga: pyobjc-framework-Cocoa,
 pyobjc-framework-Quartz, Pillow.
 """
 
-import math
 import os
 import sys
 import time
@@ -59,6 +58,7 @@ SCALE = 2                  # render 2x (Retina)
 Y_OFFSET = 6               # od górnej krawędzi ekranu
 MODE_CHECK_SEC = 0.25      # jak często sprawdzać stan (jedyny timer)
 BUILD_FPS = 16             # gęstość klatek w prekompute
+THINK_SPEEDUP = 2.6        # „myśli" to ta sama kropka co idle, tylko szybciej
 ALPHA_BOOST = 2.2          # krycie: jaśniej = bardziej kryjące
 LOG = os.path.expanduser("~/.claude/simple-tts-overlay.log")
 
@@ -77,7 +77,7 @@ def _mode_period(mode):
     if mode == "idle":
         return 2 * KF.SWEEP_SEC              # bezszwowa pętla (fala trójkątna)
     if mode == "think":
-        return 2 * math.pi / 6.2             # okres sin(t*6.2)
+        return 2 * KF.SWEEP_SEC / THINK_SPEEDUP   # ta sama kropka, szybciej
     return 2.4                               # speak: pętla ~2.4 s
 
 
@@ -177,12 +177,17 @@ def main():
     app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
 
     t0 = time.perf_counter()
-    cache, keepalive = {}, []
-    for mode in ("idle", "think", "speak"):
-        frames, keep, period = _build_frames(mode)
-        cache[mode] = (frames, period)
-        keepalive.append(keep)                   # utrzymaj bajty CGImage żywe
-    _log(f"prekompute {sum(len(cache[m][0]) for m in cache)} klatek w "
+    keepalive = []
+    idle_frames, keep_i, _ = _build_frames("idle")
+    speak_frames, keep_s, _ = _build_frames("speak")
+    keepalive += [keep_i, keep_s]
+    # „myśli" współdzieli klatki z idle — pojedyncza kropka, tylko szybciej.
+    cache = {
+        "idle": (idle_frames, _mode_period("idle")),
+        "think": (idle_frames, _mode_period("think")),
+        "speak": (speak_frames, _mode_period("speak")),
+    }
+    _log(f"prekompute {len(idle_frames) + len(speak_frames)} klatek w "
          f"{(time.perf_counter() - t0) * 1000:.0f} ms")
 
     panels = [make_panel() for _ in NSScreen.screens()]

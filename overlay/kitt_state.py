@@ -1,20 +1,28 @@
 """Wybór trybu nakładki KITT ze stanu simple-tts (tylko stdlib, testowalne).
 
-  speak -> simple-tts właśnie mówi (żywy proces TTS w simple-tts-state.json)
-  think -> Claude pracuje (busy ustawiony przez hook UserPromptSubmit)
+Agregacja po WSZYSTKICH sesjach Claude Code:
+  speak -> ktokolwiek właśnie odtwarza dźwięk (żywy proces afplay/say)
+  think -> ktokolwiek pracuje (świeży plik w katalogu busy)
   idle  -> nic z powyższych
-  None  -> nakładka wyłączona (brak configu lub overlay_enabled=false) -> nic nie rysuj
+  None  -> nakładka wyłączona (brak configu lub knight_rider=false)
 
-Ścieżki jako stałe modułu, żeby testy mogły je monkeypatchować (jak w conftest).
+Precedencja: speak > think > idle (mowa kogokolwiek wygrywa z myśleniem).
+„speak" jest wykrywane po realnym procesie odtwarzania, więc modulator rusza
+się dokładnie wtedy, gdy leci dźwięk (a nie podczas syntezowania/ładowania).
+
+Ścieżki jako stałe modułu, żeby testy mogły je monkeypatchować.
 """
 
 import json
 import os
 import subprocess
+import time
 
-STATE_PATH = os.path.expanduser("~/.claude/simple-tts-state.json")
-BUSY_PATH = os.path.expanduser("~/.claude/simple-tts-busy")
 CONFIG_PATH = os.path.expanduser("~/.claude/simple-tts-config.json")
+# Katalog znaczników „sesja pracuje": jeden plik na sesję (touch/rm przez hooki).
+BUSY_DIR = os.path.expanduser("~/.claude/simple-tts-busy.d")
+BUSY_STALE_SEC = 900          # znacznik starszy niż 15 min = osierocony, ignoruj
+AUDIO_PROCS = ("afplay", "say")
 
 
 def _read_json(path):
@@ -34,38 +42,33 @@ def overlay_enabled():
 
 
 def is_speaking():
-    """True gdy PID z simple-tts-state.json żyje i jest naszym procesem TTS
-    (`say` albo edge_speak.py) — analogicznie do tts_utils._is_our_tts."""
-    st = _read_json(STATE_PATH)
-    if not st:
-        return False
-    pid = st.get("pid")
-    if not pid:
-        return False
-    try:
-        os.kill(pid, 0)
-    except (OSError, TypeError):
-        return False
-    try:
-        out = subprocess.run(["ps", "-p", str(pid), "-o", "command="],
-                             capture_output=True, text=True)
-    except OSError:
-        return False
-    cmd = out.stdout.strip()
-    if not cmd:
-        return False
-    if "edge_speak.py" in cmd:
-        return True
-    return os.path.basename(cmd.split()[0]) == "say"
+    """True gdy leci dźwięk TTS — żyje proces odtwarzania (afplay lub say).
+    Wykrywa mowę KAŻDEJ sesji i tylko podczas realnego odtwarzania."""
+    for name in AUDIO_PROCS:
+        try:
+            r = subprocess.run(["pgrep", "-x", name],
+                               capture_output=True, text=True)
+        except OSError:
+            continue
+        if r.stdout.strip():
+            return True
+    return False
 
 
 def is_busy():
-    """True gdy Claude pracuje (plik busy = '1')."""
+    """True gdy którakolwiek sesja pracuje (świeży znacznik w BUSY_DIR)."""
     try:
-        with open(BUSY_PATH) as f:
-            return f.read().strip() == "1"
+        names = os.listdir(BUSY_DIR)
     except OSError:
         return False
+    now = time.time()
+    for name in names:
+        try:
+            if now - os.path.getmtime(os.path.join(BUSY_DIR, name)) < BUSY_STALE_SEC:
+                return True
+        except OSError:
+            pass
+    return False
 
 
 def current_mode():
