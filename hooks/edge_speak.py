@@ -17,10 +17,19 @@ usage and is bounded by total size (`cache_max_mb`), evicting least-used-then-
 oldest entries. Synthesis writes to a temp file in the cache dir and is
 atomically moved into place on success.
 
-Payload keys: edge_voice, edge_rate, text, say_voice, say_rate, cache_max_mb.
+When `intro_sound` is set (e.g. "kitt"), the synthesized speech is mixed under
+a looping background sound with a 1 s intro and a ~1 s outro that ends in the
+sound's quiet valley (see _mix_kitt) — the mix is done at playback with ffmpeg,
+so the on-disk cache always holds the plain speech and the effect toggles
+instantly with config. Missing ffmpeg / sound file → the plain speech plays.
+
+Payload keys: edge_voice, edge_rate, text, say_voice, say_rate, cache_max_mb,
+intro_sound.
 """
 
+import math
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -48,6 +57,110 @@ def _play(path):
         return True
     except OSError:
         return False
+
+
+def _sound_path(name):
+    """Absolute path to a bundled background sound (e.g. 'kitt' -> sounds/kitt.mp3)."""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        'sounds', f'{name}.mp3')
+
+
+def _audio_duration(path):
+    """Seconds of audio in `path` via ffprobe (raises on any failure)."""
+    res = subprocess.run(
+        ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+         '-of', 'default=noprint_wrappers=1:nokey=1', path],
+        capture_output=True, text=True, timeout=10,
+    )
+    return float(res.stdout.strip())
+
+
+# Background-sound mix tuning. The KITT loop runs in ~1.28 s cycles, each ending
+# in a quiet valley at t ≈ V0 + n·PERIOD s. We end the background at the first
+# valley AFTER the speech (INTRO + speech + ≥MIN_OUTRO) so it dies in a natural
+# quiet point, not mid-swoosh, with a short fade to true zero.
+_INTRO = 1.0        # seconds of sound before speech starts
+_PERIOD = 1.28      # KITT loop cycle length
+_V0 = 0.04          # time of the first valley
+_MIN_OUTRO = 0.35   # minimum tail after speech before the ending valley
+_FADE = 0.10        # fade-to-zero at the very end
+
+
+def _mix_kitt(speech_path, payload):
+    """Mix `speech_path` under the configured background sound and return a temp
+    mp3 to play, or None (caller falls back to the plain speech) when disabled,
+    ffmpeg/ffprobe or the sound file is missing, or ffmpeg fails."""
+    name = payload.get('intro_sound')          # absent → feature off (tests)
+    if not name or name == 'none':
+        return None
+    if not (shutil.which('ffmpeg') and shutil.which('ffprobe')):
+        return None
+    sound = _sound_path(name)
+    if not os.path.exists(sound):
+        return None
+    try:
+        dur = _audio_duration(speech_path)
+    except Exception:
+        return None
+    if dur <= 0:
+        return None
+
+    n = math.ceil((_INTRO + dur + _MIN_OUTRO - _V0) / _PERIOD)
+    end = _V0 + n * _PERIOD
+    fade_start = max(0.0, end - _FADE)
+    delay_ms = int(_INTRO * 1000)
+    graph = (
+        f"[0:a]aformat=sample_rates=44100:channel_layouts=stereo,"
+        f"atrim=0:{end:.3f},asetpts=PTS-STARTPTS,volume=1.7,"
+        f"afade=t=out:st={fade_start:.3f}:d={_FADE}[kitt];"
+        f"[1:a]aformat=sample_rates=44100:channel_layouts=stereo,volume=1.3,"
+        f"adelay={delay_ms}|{delay_ms},apad=whole_dur={end:.3f},asplit=2[sc][sp];"
+        f"[kitt][sc]sidechaincompress=threshold=0.04:ratio=9:attack=15:"
+        f"release=250:makeup=1[duck];"
+        f"[duck][sp]amix=inputs=2:duration=longest:normalize=0,"
+        f"alimiter=limit=0.95[mix]"
+    )
+    fd, out = tempfile.mkstemp(prefix='simple-tts-kitt-', suffix='.mp3')
+    os.close(fd)
+    try:
+        res = subprocess.run(
+            ['ffmpeg', '-y', '-stream_loop', '-1', '-i', sound, '-i', speech_path,
+             '-filter_complex', graph, '-map', '[mix]',
+             '-ac', '2', '-ar', '44100', '-b:a', '192k', out],
+            capture_output=True, timeout=20,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        res = None
+    if res is None or res.returncode != 0 or _empty(out):
+        try:
+            os.unlink(out)
+        except OSError:
+            pass
+        return None
+    return out
+
+
+def _empty(path):
+    try:
+        return os.path.getsize(path) == 0
+    except OSError:
+        return True
+
+
+def _play_speech(path, payload):
+    """Play the speech, mixing in the background sound when enabled; on any mix
+    failure play the plain speech. Returns True if something played."""
+    mixed = _mix_kitt(path, payload)
+    if mixed:
+        try:
+            if _play(mixed):
+                return True
+        finally:
+            try:
+                os.unlink(mixed)
+            except OSError:
+                pass
+    return _play(path)
 
 
 def _payload_from_env():
@@ -81,7 +194,7 @@ def main():
         hit = False
     if hit:
         ac.record_hit(key)
-        if not _play(cache_file):
+        if not _play_speech(cache_file, payload):
             _say(payload)
         return
 
@@ -120,7 +233,7 @@ def main():
         except OSError:
             play_path = tmp  # storing failed; still play what we synthesized
 
-        if not _play(play_path):
+        if not _play_speech(play_path, payload):
             _say(payload)
     finally:
         if tmp is not None:

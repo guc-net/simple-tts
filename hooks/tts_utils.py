@@ -33,6 +33,10 @@ DEFAULT_CONFIG = {
     # Total size budget (MB) for the on-disk edge-tts audio cache; least-used-
     # then-oldest entries are evicted once it is exceeded.
     "cache_max_mb": 100,
+    # Background sound mixed under the speech (1 s intro + quiet-ducked bed +
+    # outro ending in the sound's quiet valley). "kitt" = Knight Rider bed;
+    # "none" (or "") = plain speech. Applies to the edge engine only.
+    "intro_sound": "kitt",
 }
 
 # Map of language names (as stored by the setup skill) to phonetic dict codes
@@ -339,6 +343,7 @@ def speak(text, priority=False, force=False):
                 "say_voice": voice,
                 "say_rate": rate,
                 "cache_max_mb": config.get('cache_max_mb', 100),
+                "intro_sound": config.get('intro_sound', 'kitt'),
             })
             proc = subprocess.Popen(
                 [sys.executable, EDGE_SPEAK_PATH],

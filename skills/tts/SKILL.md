@@ -1,5 +1,5 @@
 ---
-description: "Mute or unmute simple-tts speech and manage the audio cache. Usage: /simple-tts:tts on|off|status|cache [stats|prune|clear]."
+description: "Mute or unmute simple-tts speech, toggle the KITT background sound, and manage the audio cache. Usage: /simple-tts:tts on|off|status|sound [on|off]|cache [stats|prune|clear]."
 user_invocable: true
 ---
 
@@ -30,11 +30,31 @@ Confirm: "TTS muted. Re-enable with `/tts on`." Do NOT add a TTS tag to this res
 
 Same as above with `c['enabled'] = True`. Confirm: "TTS unmuted." You may add a TTS tag again from this response on.
 
+## /tts sound [on|off]
+
+Toggle the background sound mixed under the speech (`intro_sound` config key: `"kitt"` = Knight Rider bed with a 1 s intro/outro; `"none"` = plain speech). Applies to the edge engine and needs `ffmpeg` on PATH. `on` sets `"kitt"`, `off` sets `"none"`; no argument reports the current value.
+
+```bash
+python3 -c "
+import json, os, sys
+p = os.path.expanduser('~/.claude/simple-tts-config.json')
+with open(p) as f: c = json.load(f)
+arg = sys.argv[1] if len(sys.argv) > 1 else ''
+if arg in ('on','off'):
+    c['intro_sound'] = 'kitt' if arg == 'on' else 'none'
+    with open(p, 'w') as f: json.dump(c, f, indent=2, ensure_ascii=False)
+print('intro_sound =', c.get('intro_sound', 'kitt'))
+" ${ARG:-}
+```
+
+Pass the user's `on`/`off` as the argument. Confirm the resulting state (e.g. "Dźwięk KITT włączony." / "…wyłączony.").
+
 ## /tts status
 
 Read the config and report:
 - enabled: `enabled` key (missing key = enabled)
 - voice, rate, language
+- background sound: `intro_sound` key (missing key = `kitt`; `none` = off)
 - quiet hours, if `quiet_hours` is set (speech is silenced between start and end)
 
 ## /tts cache [stats|prune|clear]

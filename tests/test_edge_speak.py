@@ -10,8 +10,9 @@ import edge_speak
 
 
 class FakeCompleted:
-    def __init__(self, returncode=0):
+    def __init__(self, returncode=0, stdout=""):
         self.returncode = returncode
+        self.stdout = stdout
 
 
 def _payload(**overrides):
@@ -120,6 +121,63 @@ def test_failed_synth_leaves_no_temp_file(monkeypatch, tmp_path):
     leftovers = [n for n in os.listdir(ac.CACHE_DIR)
                  if n.startswith(ac.TMP_PREFIX)]
     assert leftovers == []  # temp cleaned up in finally
+
+
+def _synth_and_mix(args, **kw):
+    """Fake pipeline: uvx synth writes bytes, ffprobe reports a duration,
+    ffmpeg writes the mixed output, afplay/say succeed."""
+    if args[:2] == ["uvx", "edge-tts"]:
+        with open(args[args.index("--write-media") + 1], "wb") as f:
+            f.write(b"ID3fake-audio")
+        return FakeCompleted(0)
+    if args[0] == "ffprobe":
+        return FakeCompleted(0, stdout="3.0\n")
+    if args[0] == "ffmpeg":
+        with open(args[-1], "wb") as f:  # last arg is the mixed output path
+            f.write(b"ID3mixed-audio")
+        return FakeCompleted(0)
+    return FakeCompleted(0)
+
+
+def test_intro_sound_mixes_kitt_and_plays_the_mix(monkeypatch, tmp_path):
+    monkeypatch.setattr(edge_speak.shutil, "which", lambda _: "/usr/bin/x")
+    runs = _patch_common(monkeypatch, tmp_path, _synth_and_mix)
+    monkeypatch.setenv("SIMPLE_TTS_PAYLOAD",
+                       json.dumps(_payload(intro_sound="kitt")))
+    edge_speak.main()
+
+    assert any(r[0] == "ffmpeg" for r in runs)  # a mix happened
+    afplay = next(r for r in runs if r[0] == "afplay")
+    assert "simple-tts-kitt-" in afplay[1]  # played the mixed temp, not raw speech
+    # cache still holds the PLAIN speech (mix is playback-only)
+    with open(ac.cache_path(_payload()), "rb") as f:
+        assert f.read() == b"ID3fake-audio"
+
+
+def test_mix_failure_falls_back_to_plain_speech(monkeypatch, tmp_path):
+    monkeypatch.setattr(edge_speak.shutil, "which", lambda _: "/usr/bin/x")
+
+    def runner(args, **kw):
+        if args[0] == "ffmpeg":
+            return FakeCompleted(1)  # mixing fails
+        return _synth_and_mix(args, **kw)
+
+    runs = _patch_common(monkeypatch, tmp_path, runner)
+    monkeypatch.setenv("SIMPLE_TTS_PAYLOAD",
+                       json.dumps(_payload(intro_sound="kitt")))
+    edge_speak.main()
+
+    afplay = next(r for r in runs if r[0] == "afplay")
+    assert afplay[1] == ac.cache_path(_payload())  # plain speech, no say fallback
+
+
+def test_intro_sound_none_skips_mixing(monkeypatch, tmp_path):
+    monkeypatch.setattr(edge_speak.shutil, "which", lambda _: "/usr/bin/x")
+    runs = _patch_common(monkeypatch, tmp_path, _synth_and_mix)
+    monkeypatch.setenv("SIMPLE_TTS_PAYLOAD",
+                       json.dumps(_payload(intro_sound="none")))
+    edge_speak.main()
+    assert not any(r[0] in ("ffmpeg", "ffprobe") for r in runs)
 
 
 def test_no_payload_is_silent(monkeypatch, tmp_path):
