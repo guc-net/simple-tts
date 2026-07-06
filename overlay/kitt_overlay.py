@@ -1,19 +1,21 @@
 #!/usr/bin/env python3
-"""Nakładka KITT (Cocoa) dla simple-tts — nieruchomy rząd ledów, animowane krycie.
+"""Nakładka KITT (Cocoa) dla simple-tts — ciągła symulacja świateł.
 
-Model jak w prawdziwym KITT: ledy stoją w miejscu, a światło przebiega po nich i
-KAŻDY gaśnie w miejscu po przejściu głowy (cienie zanikają, nie jadą). Każdy led
-to CALayer; animujemy jego `opacity` (na GPU -> ~0% CPU).
+Jedna spójna symulacja klatka-po-klatce (nie osobne animacje per stan):
+  * głowa ma PŁYNNIE animowaną pozycję (amplituda i prędkość dochodzą do
+    docelowych wartości z wygładzeniem) — więc kropka płynnie przesuwa się i
+    PRZYSPIESZA między stanami, bez skoków; przejścia to jedno płynne działanie,
+  * ogon powstaje z WYGASANIA ledów w miejscu (afterglow) — cienie zanikają
+    tam, gdzie są, nie jadą,
+  * ledy stoją w miejscu; sterujemy tylko ich kryciem.
 
 Stany (kitt_state):
-  idle   -> fala światła przebiega wolno prawo<->lewo, ledy za głową gasną
-  think  -> to samo, szybciej (container.speed)
-  speak  -> symetryczny rozbłysk od środka, szerokość/jasność w rytm głośności
-            (obwiednia audio z simple-tts-speak.json) — mocno się rozszerza i zwęża
-  None   -> wygaszone
+  idle  -> jasna kropka spoczywa na środku
+  think -> kropka rozpędza się i przejeżdża prawo<->lewo (ogon gaśnie za nią)
+  speak -> na środku, symetryczny rozbłysk w rytm głośności głosu (obwiednia)
+  None  -> wygaszone
 
-Pływa nad pełnym ekranem (NSPanel + CanJoinAllSpaces + FullScreenAuxiliary),
-pojedyncza instancja (flock). Wymaga: pyobjc Cocoa+Quartz, Pillow.
+Pływa nad pełnym ekranem, pojedyncza instancja. Wymaga pyobjc Cocoa+Quartz, Pillow.
 """
 
 import fcntl
@@ -44,12 +46,11 @@ from AppKit import (  # noqa: E402
 )
 from Foundation import NSMakeRect, NSObject, NSTimer  # noqa: E402
 from Quartz import (  # noqa: E402
-    CAKeyframeAnimation,
     CALayer,
+    CATransaction,
     CGColorSpaceCreateDeviceRGB,
     CGDataProviderCreateWithData,
     CGImageCreate,
-    kCAAnimationLinear,
     kCGBitmapByteOrderDefault,
     kCGImageAlphaLast,
 )
@@ -58,20 +59,23 @@ from Quartz import (  # noqa: E402
 W, H = 520, 40
 SCALE = 2
 Y_OFFSET = 6
-MODE_CHECK_SEC = 0.25
-N_LED = 31                     # nieruchome ledy
-EDGE = 16.0                    # margines na led po bokach
-LED_D = 30                     # średnica świecenia leda (pt) — nachodzą = ciągły blask
-HEAD_SIGMA = 0.035             # promień świecącej głowy-kropki (znormalizowany)
-TAIL_LEN = 0.16                # długość gasnącego ogona ZA głową
-FLOOR = 0.04                   # tło zgaszonego leda (blisko 0 = gaśnie)
-IDLE_HALF = 1.8                # sekundy na jeden przejazd L->R
-THINK_SPEEDUP = 2.6
-BUILD_FPS = 30                 # gęstość klatek krycia (gładkość)
-SPEAK_REACH_BASE = 0.03        # minimalny „rozstaw ust" (cisza)
-SPEAK_REACH_GAIN = 0.34        # o ile rozszerza się przy pełnej głośności (mniej = węziej)
+RENDER_FPS = 30
+MODE_CHECK_SEC = 0.18
+N_LED = 31
+EDGE = 16.0
+LED_D = 30
+FLOOR = 0.03                   # krycie zgaszonego leda
+HEAD_BRIGHT = 1.0
+HEAD_SIGMA = 0.045             # promień jasnej głowy (znormalizowany)
+SWEEP_HALF = 0.44              # połowa szerokości przejazdu (0.5 = do krawędzi)
+SPEED_IDLE = 0.25              # tempo fazy w spoczynku (i tak amp=0)
+SPEED_THINK = 0.85             # tempo przejazdu w „myśli"
+EASE_TAU = 0.22                # wygładzenie dochodzenia do celu (przyspieszanie)
+TAIL_TAU = 0.16                # czas wygasania ogona (dłużej = dłuższy ogon)
+SPEAK_TAU = 0.05               # szybkie wygasanie w modulatorze (czułość)
+SPEAK_BASE = 0.03              # min. rozstaw modulatora (cisza)
+SPEAK_GAIN = 0.34              # rozszerzanie z głośnością
 SPEAK_EDGE = 0.06              # miękkość krawędzi rozbłysku
-DIP_SEC = 0.30                 # delikatne przygaszenie przy przełączaniu stanu
 LOG = os.path.expanduser("~/.claude/simple-tts-overlay.log")
 LOCK_PATH = os.path.expanduser("~/.claude/simple-tts-overlay.lock")
 SPEAK_STATE_PATH = os.path.expanduser("~/.claude/simple-tts-speak.json")
@@ -79,9 +83,8 @@ SPEAK_STATE_PATH = os.path.expanduser("~/.claude/simple-tts-speak.json")
 _CS = CGColorSpaceCreateDeviceRGB()
 _lock_handle = None
 _MIDY = H / 2.0
-_POS = [i / (N_LED - 1) for i in range(N_LED)]           # znormalizowane 0..1
-_XS = [EDGE + p * (W - 2 * EDGE) for p in _POS]           # x w punktach
-_SWEEP_PERIOD = 2 * IDLE_HALF
+_POS = [i / (N_LED - 1) for i in range(N_LED)]
+_XS = [EDGE + p * (W - 2 * EDGE) for p in _POS]
 
 
 def _log(msg):
@@ -106,9 +109,14 @@ def _clamp(x, lo=0.0, hi=1.0):
     return lo if x < lo else hi if x > hi else x
 
 
+def _tri(phase):
+    ph = phase % 1.0
+    return 1.0 - 4.0 * abs(ph - 0.5)          # -1 .. +1 .. -1
+
+
 def _led_cgimage():
     px = int(LED_D * SCALE)
-    raw = KF.dot_sprite(px, boost=1.4).tobytes()
+    raw = KF.dot_sprite(px, boost=1.6).tobytes()
     prov = CGDataProviderCreateWithData(None, raw, len(raw), None)
     cg = CGImageCreate(px, px, 8, 32, px * 4, _CS,
                        kCGImageAlphaLast | kCGBitmapByteOrderDefault,
@@ -116,101 +124,14 @@ def _led_cgimage():
     return cg, raw
 
 
-# --- obliczanie krycia ledów (na GPU jako CAKeyframeAnimation opacity) ------
-def _head(phase):
-    """Pozycja głowy 0..1..0 (fala trójkątna) dla fazy 0..1."""
-    return phase * 2.0 if phase < 0.5 else (1.0 - phase) * 2.0
-
-
-def _sweep_opacity(p, phase):
-    """Jasna głowa-kropka + ogon gasnący TYLKO za nią (kierunkowo). Przód ciemny."""
-    h = _head(phase)
-    direction = 1.0 if phase < 0.5 else -1.0        # 1. połowa w prawo, 2. w lewo
-    behind = (h - p) * direction                    # >0: led jest ZA głową
-    head = math.exp(-((p - h) / HEAD_SIGMA) ** 2)   # zwarta kropka
-    tail = math.exp(-(behind / TAIL_LEN) ** 2) if behind >= 0 else 0.0
-    return FLOOR + (1.0 - FLOOR) * max(head, tail)
-
-
-def _sweep_anim(p):
-    """Krycie jednego leda przez pełny okres przejazdu (bezszwowa pętla)."""
-    n = max(2, int(_SWEEP_PERIOD * BUILD_FPS))
-    vals = [_sweep_opacity(p, k / n) for k in range(n + 1)]   # k/n: 0..1, spójne
-    a = CAKeyframeAnimation.animationWithKeyPath_("opacity")
-    a.setValues_(vals)
-    a.setDuration_(_SWEEP_PERIOD)
-    a.setCalculationMode_(kCAAnimationLinear)
-    a.setRepeatCount_(1e9)
-    a.setRemovedOnCompletion_(False)
-    return a
-
-
 def _read_envelope():
     try:
         with open(SPEAK_STATE_PATH) as f:
             d = json.load(f)
         env, dt, start = d["env"], float(d["dt"]), float(d["start"])
-        if not env:
-            return None
-        offset = time.time() - start
-        if offset < 0 or offset >= len(env) * dt:
-            return None
-        return env, dt, offset
+        return (env, dt, start) if env else None
     except (OSError, ValueError, KeyError):
         return None
-
-
-def _speak_opacity(p, level):
-    """Symetryczny rozbłysk od środka; szerokość rośnie z głośnością `level`."""
-    reach = SPEAK_REACH_BASE + level * SPEAK_REACH_GAIN
-    lit = _clamp((reach - abs(p - 0.5)) / SPEAK_EDGE)
-    return FLOOR + (1.0 - FLOOR) * lit
-
-
-def _speak_anim(p, env, dt, offset):
-    a = CAKeyframeAnimation.animationWithKeyPath_("opacity")
-    a.setValues_([_speak_opacity(p, e) for e in env])
-    a.setDuration_(len(env) * dt)
-    a.setCalculationMode_(kCAAnimationLinear)
-    a.setRemovedOnCompletion_(False)
-    a.setTimeOffset_(offset)                     # sync do bieżącego miejsca audio
-    return a
-
-
-def _speak_pulse_anim(p):
-    """Fallback bez obwiedni: żywy, symetryczny puls."""
-    n = 24
-    vals = [_speak_opacity(p, 0.5 + 0.5 * math.sin(2 * math.pi * k / n))
-            for k in range(n + 1)]
-    a = CAKeyframeAnimation.animationWithKeyPath_("opacity")
-    a.setValues_(vals)
-    a.setDuration_(0.9)
-    a.setCalculationMode_(kCAAnimationLinear)
-    a.setRepeatCount_(1e9)
-    a.setRemovedOnCompletion_(False)
-    return a
-
-
-def _dip(container):
-    """Delikatne przygaszenie przy przełączaniu stanu (jak w KITT)."""
-    a = CAKeyframeAnimation.animationWithKeyPath_("opacity")
-    a.setValues_([1.0, 0.35, 1.0])
-    a.setKeyTimes_([0.0, 0.45, 1.0])
-    a.setDuration_(DIP_SEC)
-    a.setRemovedOnCompletion_(True)
-    container.setOpacity_(1.0)
-    container.addAnimation_forKey_(a, "dip")
-
-
-def _fade(container, to):
-    a = CAKeyframeAnimation.animationWithKeyPath_("opacity")
-    pl = container.presentationLayer()
-    frm = pl.opacity() if pl is not None else container.opacity()
-    a.setValues_([frm, to])
-    a.setDuration_(DIP_SEC)
-    a.setRemovedOnCompletion_(True)
-    container.setOpacity_(to)
-    container.addAnimation_forKey_(a, "fade")
 
 
 def make_panel(cgimg):
@@ -258,48 +179,76 @@ def top_center(sf):
 
 
 class Controller(NSObject):
-    def check_(self, timer):
+    def enterMode_(self, mode):
+        self.speak = None
+        if mode is None:
+            self.vis_t = 0.0
+            return
+        self.vis_t = 1.0
+        if mode == "think":
+            self.amp_t, self.speed_t = 1.0, SPEED_THINK
+        elif mode == "speak":
+            self.amp_t, self.speed_t = 0.0, SPEED_IDLE
+            self.speak = _read_envelope()
+        else:                                     # idle
+            self.amp_t, self.speed_t = 0.0, SPEED_IDLE
+
+    def render_(self, timer):
         try:
-            screens = NSScreen.screens()
-            for i, ent in enumerate(self.entries):
-                if i < len(screens):
-                    ent["panel"].setFrameOrigin_(top_center(screens[i].frame()))
-            mode = KS.current_mode()
-            if mode == self.curmode:
-                return
-            self.curmode = mode
-            self.applyMode_(mode)
-        except Exception:
-            _log("check FAILED:\n" + traceback.format_exc())
+            now = time.monotonic()
+            dt = min(0.1, now - self.t)
+            self.t = now
+            wall = time.time()
 
-    def applyMode_(self, mode):
-        old = self.prevmode
-        self.prevmode = mode
-        for ent in self.entries:
-            container, leds = ent["container"], ent["leds"]
-            if mode is None:
-                _fade(container, 0.0)
-                continue
-            if old is None or old == "__init__":
-                _fade(container, 1.0)
+            if now - self.lastcheck >= MODE_CHECK_SEC:
+                self.lastcheck = now
+                m = KS.current_mode()
+                if m != self.mode:
+                    self.mode = m
+                    self.enterMode_(m)
+                screens = NSScreen.screens()
+                for i, ent in enumerate(self.entries):
+                    if i < len(screens):
+                        ent["panel"].setFrameOrigin_(top_center(screens[i].frame()))
+
+            k = 1.0 - math.exp(-dt / EASE_TAU)
+            self.amp += (self.amp_t - self.amp) * k
+            self.speed += (self.speed_t - self.speed) * k
+            self.vis += (self.vis_t - self.vis) * k
+            self.phase += self.speed * dt
+            hx = 0.5 + self.amp * SWEEP_HALF * _tri(self.phase)
+
+            led = self.led
+            if self.mode == "speak":
+                if self.speak:
+                    env, sdt, start = self.speak
+                    idx = int((wall - start) / sdt)
+                    level = env[idx] if 0 <= idx < len(env) else 0.0
+                else:
+                    level = 0.5 + 0.5 * math.sin(now * 6.0)
+                reach = SPEAK_BASE + level * SPEAK_GAIN
+                fd = math.exp(-dt / SPEAK_TAU)
+                for i, p in enumerate(_POS):
+                    des = _clamp((reach - abs(p - 0.5)) / SPEAK_EDGE) * HEAD_BRIGHT
+                    led[i] = des if des > led[i] else led[i] * fd
             else:
-                _dip(container)                  # przygaszenie „po przełączeniu"
+                decay = math.exp(-dt / TAIL_TAU)
+                for i, p in enumerate(_POS):
+                    g = HEAD_BRIGHT * math.exp(-((p - hx) / HEAD_SIGMA) ** 2)
+                    led[i] = g if g > led[i] else led[i] * decay
 
-            if mode in ("idle", "think"):
-                container.setSpeed_(THINK_SPEEDUP if mode == "think" else 1.0)
-                if old not in ("idle", "think"):
-                    for i, led in enumerate(leds):
-                        led.addAnimation_forKey_(self.sweep[i], "op")
-            else:                                # speak
-                container.setSpeed_(1.0)
-                data = _read_envelope()
-                for i, led in enumerate(leds):
-                    if data:
-                        env, dt, off = data
-                        anim = _speak_anim(_POS[i], env, dt, off)
-                    else:
-                        anim = _speak_pulse_anim(_POS[i])
-                    led.addAnimation_forKey_(anim, "op")
+            CATransaction.begin()
+            CATransaction.setDisableActions_(True)
+            vis = self.vis
+            out = [FLOOR + (1.0 - FLOOR) * _clamp(v) for v in led]
+            for ent in self.entries:
+                ent["container"].setOpacity_(vis)
+                lyrs = ent["leds"]
+                for i in range(N_LED):
+                    lyrs[i].setOpacity_(out[i])
+            CATransaction.commit()
+        except Exception:
+            _log("render FAILED:\n" + traceback.format_exc())
 
 
 def main():
@@ -311,24 +260,27 @@ def main():
     app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
 
     cgimg, raw = _led_cgimage()
-    sweep = [_sweep_anim(p) for p in _POS]       # animacje przejazdu (raz)
-
     entries = []
     for s in NSScreen.screens():
         panel, container, leds = make_panel(cgimg)
         panel.setFrameOrigin_(top_center(s.frame()))
         entries.append({"panel": panel, "container": container, "leds": leds})
-    _log(f"start (LED): {len(entries)} ekran(ów), {N_LED} ledów")
+    _log(f"start (sim): {len(entries)} ekran(ów), {N_LED} ledów")
 
     ctrl = Controller.alloc().init()
     ctrl.entries = entries
-    ctrl.sweep = sweep
-    ctrl.curmode = "__none__"
-    ctrl.prevmode = "__init__"
     ctrl._raw = raw
-    ctrl.check_(None)
+    ctrl.led = [FLOOR] * N_LED
+    ctrl.mode = "__init__"
+    ctrl.speak = None
+    ctrl.amp = ctrl.amp_t = 0.0
+    ctrl.speed = ctrl.speed_t = SPEED_IDLE
+    ctrl.vis = ctrl.vis_t = 0.0
+    ctrl.phase = 0.0
+    ctrl.t = time.monotonic()
+    ctrl.lastcheck = -1.0
     NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-        MODE_CHECK_SEC, ctrl, b"check:", None, True)
+        1.0 / RENDER_FPS, ctrl, b"render:", None, True)
     app.run()
 
 
