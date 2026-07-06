@@ -22,6 +22,8 @@ A Claude Code plugin that speaks short TTS summaries when Claude finishes a task
 - **skills/tts/SKILL.md** — invoked as `/simple-tts:tts` (plugin skills are namespaced; a bare `/tts` needs a personal `~/.claude/commands/tts.md` wrapper). `on|off|status` toggles `"enabled"` in the config (mute without uninstalling); `cache [stats|prune|clear]` manages the audio cache via `cache_cli.py` (resolves the script path whether installed as a plugin or run from the repo). `cache stats` always leads with a 🔝 most-played section
 - **mcp/server.py** + **.mcp.json** — stdlib-only MCP stdio server with a `speak` tool, for environments without hooks (Cowork, desktop chat) and for Claude Code `tool` mode. Reuses `tts_utils.speak()` (so mute + quiet hours apply); when to call it is governed by the SessionStart instruction, not the tool description
 - **skills/simple-tts-setup/SKILL.md** — setup wizard (`/simple-tts-setup`): writes the config file, handles uninstall and migration from pre-2.0 installs
+- **hooks/user_prompt.py** — UserPromptSubmit hook: marks "Claude is working" for the KITT overlay by writing `~/.claude/simple-tts-busy` (`set_busy(True)`); the Stop hook clears it. Silent no-op without config; writes nothing to stdout so it adds no prompt context
+- **overlay/** — the **Knight Rider scanner overlay** (optional GUI daemon, not on the hook path so the core stays stdlib-only). `kitt_frame.py` renders a frame (PIL, additive-glow LEDs) for one of three modes; `kitt_state.py` (stdlib, unit-tested) picks the mode from simple-tts state — **speak** when the TTS PID in `simple-tts-state.json` is alive (mirrors `_is_our_tts`), **think** when `simple-tts-busy` is `1`, **idle** otherwise, `None` when `knight_rider` is off; `kitt_overlay.py` is a transparent, click-through, always-on-top Cocoa `NSPanel` (per screen, `CanJoinAllSpaces` + `FullScreenAuxiliary` so it floats over a native-fullscreen terminal) that animates the frames. Deps (pyobjc + Pillow) and autostart via `install_overlay.sh` (copies to `~/.claude/simple-tts-overlay/`, writes a LaunchAgent); `uninstall_overlay.sh` reverses it
 - **.claude-plugin/plugin.json** — plugin manifest (version auto-bumped by CI)
 
 ## Key design decisions
@@ -33,6 +35,7 @@ A Claude Code plugin that speaks short TTS summaries when Claude finishes a task
 - Stop hook only speaks when a `<!-- TTS: -->` tag exists — silence means Claude stopped for a permission prompt, and the notification hook handles that
 - Phonetic replacement is whole-word, longest-match-first (so `deployed` doesn't get mangled by the `deploy` entry)
 - `speak()` honors `"enabled": false` (mute) and `"quiet_hours"` (`{"start","end"}`, may wrap past midnight; malformed config fails open — speech stays on). `force=True` bypasses both (used only by speak_cli)
+- **Knight Rider mode** (`"knight_rider"` config key, default `true`) is one switch for two effects: the KITT siren bed under the voice (gates `intro_sound` in the edge payload — off ⇒ `"none"`) and the scanner overlay (`kitt_state.overlay_enabled`). Toggle via `/simple-tts:tts knight-rider on|off`. The overlay is a separate daemon with its own deps, so muting speech (`enabled:false`) does not hide the overlay and vice-versa — the visual is governed only by `knight_rider`
 
 ## Tests & lint
 

@@ -15,6 +15,8 @@ from datetime import datetime
 # Config file location
 CONFIG_PATH = os.path.expanduser("~/.claude/simple-tts-config.json")
 STATE_PATH = os.path.expanduser("~/.claude/simple-tts-state.json")
+# "Claude pracuje" dla nakładki KITT: '1' od UserPromptSubmit do Stop.
+BUSY_PATH = os.path.expanduser("~/.claude/simple-tts-busy")
 USER_PHONETICS_PATH = os.path.expanduser("~/.claude/simple-tts-phonetics.json")
 PHONETICS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "phonetics")
 EDGE_SPEAK_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "edge_speak.py")
@@ -35,8 +37,13 @@ DEFAULT_CONFIG = {
     "cache_max_mb": 100,
     # Background sound mixed under the speech (1 s intro + quiet-ducked bed +
     # outro ending in the sound's quiet valley). "kitt" = Knight Rider bed;
-    # "none" (or "") = plain speech. Applies to the edge engine only.
+    # "none" (or "") = plain speech. Applies to the edge engine only. Only
+    # used when knight_rider is on (below).
     "intro_sound": "kitt",
+    # "Knight Rider" mode: the KITT siren bed under the voice + the floating
+    # scanner overlay animation (idle / thinking / speaking). One switch for
+    # both. Default on. When off: plain voice, no bed, no overlay.
+    "knight_rider": True,
 }
 
 # Map of language names (as stored by the setup skill) to phonetic dict codes
@@ -278,6 +285,16 @@ def _is_our_tts(pid):
         return False
 
 
+def set_busy(busy):
+    """Zapisz stan 'Claude pracuje' dla nakładki KITT (tryb 'think').
+    UserPromptSubmit -> True, Stop -> False. Ciche przy błędzie zapisu."""
+    try:
+        with open(BUSY_PATH, "w") as f:
+            f.write("1" if busy else "0")
+    except OSError:
+        pass
+
+
 def speak(text, priority=False, force=False):
     """
     Speak text using macOS say with the configured voice. Non-blocking:
@@ -343,7 +360,9 @@ def speak(text, priority=False, force=False):
                 "say_voice": voice,
                 "say_rate": rate,
                 "cache_max_mb": config.get('cache_max_mb', 100),
-                "intro_sound": config.get('intro_sound', 'kitt'),
+                # Syrena KITT-a tylko w trybie Knight Rider.
+                "intro_sound": (config.get('intro_sound', 'kitt')
+                                if config.get('knight_rider', True) else 'none'),
             })
             proc = subprocess.Popen(
                 [sys.executable, EDGE_SPEAK_PATH],

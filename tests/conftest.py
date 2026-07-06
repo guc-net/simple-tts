@@ -18,6 +18,7 @@ def isolated_paths(tmp_path, monkeypatch):
     """Redirect config, state and user-phonetics paths into tmp_path."""
     monkeypatch.setattr(tts_utils, "CONFIG_PATH", str(tmp_path / "config.json"))
     monkeypatch.setattr(tts_utils, "STATE_PATH", str(tmp_path / "state.json"))
+    monkeypatch.setattr(tts_utils, "BUSY_PATH", str(tmp_path / "busy"))
     monkeypatch.setattr(tts_utils, "USER_PHONETICS_PATH", str(tmp_path / "phonetics.json"))
     return tmp_path
 

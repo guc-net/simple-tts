@@ -132,9 +132,35 @@ Optional keys (add only if the user chose them):
 - `"fallback_message"`: phrase spoken when a response has no TTS tag
 - `"quiet_hours"`: `{"start": "22:00", "end": "07:00"}` — no speech inside this window (may wrap past midnight)
 - `"enabled"`: `false` mutes all speech without uninstalling (toggled by `/tts on|off`; missing = enabled)
+- `"knight_rider"`: `false` turns off Knight Rider mode — the KITT siren bed under the voice **and** the scanner overlay (toggled by `/tts knight-rider on|off`; missing = on)
 - `"debug"`: `true` to log notification payloads to `~/.claude/simple-tts-notification-debug.log` (auto-trimmed to 200 lines)
 
 That's all — hooks are auto-registered by the plugin, and the TTS instruction is injected into each session by the SessionStart hook based on this config (language, voice gender for grammar forms, name).
+
+## Step 6b: Knight Rider scanner overlay (optional, macOS)
+
+Offer the floating **KITT scanner overlay** — a red Larson scanner at the top of
+the screen that idles, switches to a thinking animation while Claude works, and to
+a voice modulator while the TTS voice is actually speaking. It floats over
+fullscreen terminals. It is a separate GUI daemon (deps: pyobjc + Pillow), so it
+does not affect the stdlib-only hooks.
+
+> Install the Knight Rider scanner overlay? (a red KITT scanner floats at the top of your screen and reacts while I think/speak)
+
+If yes, run the installer from the plugin dir (resolves the plugin path whether run
+from the repo or the marketplace cache), passing an optional python with pip:
+
+```bash
+DIR="$(ls -d "${CLAUDE_PLUGIN_ROOT:-}/overlay" 2>/dev/null \
+  || ls -d ~/.claude/plugins/cache/*/simple-tts/*/overlay 2>/dev/null | sort -V | tail -1 \
+  || ls -d "$PWD/overlay" 2>/dev/null)"
+bash "$DIR/install_overlay.sh"
+```
+
+It installs deps, copies the overlay to `~/.claude/simple-tts-overlay/`, and loads a
+LaunchAgent so it autostarts on login. Toggle it any time with `/tts knight-rider
+on|off` (which also controls the siren bed). To remove just the overlay:
+`bash "$DIR/uninstall_overlay.sh"`.
 
 ## Step 7: Test and done
 
@@ -160,6 +186,7 @@ say -v "<voice>" -r <rate> "Setup complete!"
 ## Uninstall
 
 1. Remove `~/.claude/simple-tts-config.json` and `~/.claude/simple-tts-state.json` — hooks go silent immediately.
+1b. If the overlay was installed, remove it too: `bash "$DIR/uninstall_overlay.sh"` (resolve `$DIR` as in Step 6b) — unloads the LaunchAgent and deletes `~/.claude/simple-tts-overlay/`.
 2. Run the migration check from Step 2 and clean any pre-2.0 leftovers too.
 3. Tell user:
 > Simple TTS removed.

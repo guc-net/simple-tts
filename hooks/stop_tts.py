@@ -11,7 +11,7 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
-from tts_utils import extract_tts_from_transcript, load_config, read_hook_input, speak
+from tts_utils import extract_tts_from_transcript, load_config, read_hook_input, set_busy, speak
 
 
 def extract_tts_from_message(message):
@@ -26,6 +26,10 @@ def main():
     config = load_config()
     if config is None:
         sys.exit(0)
+
+    # Claude skończył pracę -> nakładka wychodzi z trybu "think" (chyba że
+    # zaraz zacznie mówić: tryb "speak" ma pierwszeństwo w kitt_state).
+    set_busy(False)
 
     # In "tool" mode the model speaks via the speak MCP tool, so the Stop hook
     # has nothing to do (and must stay silent to avoid double speech).
