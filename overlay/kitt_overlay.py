@@ -18,6 +18,7 @@ z CanJoinAllSpaces + FullScreenAuxiliary. Wymaga: pyobjc-framework-Cocoa,
 pyobjc-framework-Quartz, Pillow.
 """
 
+import fcntl
 import os
 import sys
 import time
@@ -61,8 +62,21 @@ BUILD_FPS = 16             # gęstość klatek w prekompute
 THINK_SPEEDUP = 2.6        # „myśli" to ta sama kropka co idle, tylko szybciej
 ALPHA_BOOST = 2.2          # krycie: jaśniej = bardziej kryjące
 LOG = os.path.expanduser("~/.claude/simple-tts-overlay.log")
+LOCK_PATH = os.path.expanduser("~/.claude/simple-tts-overlay.lock")
 
 _CS = CGColorSpaceCreateDeviceRGB()
+_lock_handle = None
+
+
+def _single_instance():
+    """True gdy udało się zająć blokadę — inaczej działa już inna nakładka."""
+    global _lock_handle
+    _lock_handle = open(LOCK_PATH, "w")
+    try:
+        fcntl.flock(_lock_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except OSError:
+        return False
 
 
 def _log(msg):
@@ -173,6 +187,10 @@ class Controller(NSObject):
 
 
 def main():
+    if not _single_instance():
+        _log("inna instancja nakładki już działa — wychodzę")
+        return
+
     app = NSApplication.sharedApplication()
     app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
 
