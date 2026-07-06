@@ -66,9 +66,9 @@ EDGE = 16.0
 LED_D = 30
 FLOOR = 0.03                   # krycie zgaszonego leda
 HEAD_BRIGHT = 1.0
-HEAD_SIGMA = 0.045             # promień jasnej głowy (znormalizowany)
+HEAD_SIGMA = 0.038             # promień jasnej głowy (mniejszy = wyraźniejsza kropka)
 SWEEP_HALF = 0.44              # połowa szerokości przejazdu (0.5 = do krawędzi)
-SPEED_IDLE = 0.25              # tempo fazy w spoczynku (i tak amp=0)
+SPEED_IDLE = 0.0               # w ciszy faza zamrożona -> kropka stoi na środku
 SPEED_THINK = 0.52             # wolniejszy przejazd
 EASE_TAU = 0.22                # wygładzenie dochodzenia do celu (przyspieszanie)
 TAIL_TAU = 0.10                # krótszy ogon (szybciej znika)
