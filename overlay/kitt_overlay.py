@@ -10,7 +10,9 @@ Jedna spójna symulacja klatka-po-klatce (nie osobne animacje per stan):
   * ledy stoją w miejscu; sterujemy tylko ich kryciem.
 
 Stany (kitt_state):
-  idle  -> wolny przejazd prawo<->lewo (myśli = szybciej)
+  idle  -> wolny przejazd prawo<->lewo (myśli = szybciej); po IDLE_SLEEP_SEC
+           ciągłego idle nakładka gaśnie i chowa się (jak None), budzi się
+           dopiero gdy stan realnie się zmieni (nie przy samym upływie czasu)
   think -> kropka rozpędza się i przejeżdża prawo<->lewo (ogon gaśnie za nią)
   speak -> na środku, symetryczny rozbłysk w rytm głośności głosu (obwiednia)
   None  -> wygaszone (panel schodzi z ekranu, timer zwalnia do 1 s)
@@ -72,6 +74,7 @@ FPS_SPEAK = 28                 # modulator mowy (obwiednia ma krok 0.04 s)
 MODE_CHECK_SEC = 0.18
 SCREEN_CHECK_SEC = 2.0
 POLL_SEC = 1.0                 # wolny timer, gdy nakładka wygaszona
+IDLE_SLEEP_SEC = 180.0         # ciągły idle dłużej niż to -> zgaśnij i schowaj się
 N_LED = 13                     # dyskretne diody (jak segmenty w referencji)
 EDGE = 22.0
 FLOOR = 0.10                   # krycie zgaszonej diody (kropka ledwo się tli)
@@ -223,6 +226,8 @@ def top_center(sf):
 class Controller(NSObject):
     def enterMode_(self, mode):
         self.speak = None
+        if mode == "idle":
+            self.idle_entered = time.monotonic()   # świeży start 3-minutowego licznika
         if mode is None:
             self.vis_t = 0.0
             return
@@ -274,10 +279,14 @@ class Controller(NSObject):
         self.applied_core = [None] * N_LED
 
     def poll_(self, timer):
-        """Wygaszona nakładka: tylko sprawdzanie stanu, zero renderu."""
+        """Wygaszona nakładka: tylko sprawdzanie stanu, zero renderu.
+
+        Budzi się, gdy stan realnie się zmienił względem tego, co ją uśpiło
+        (self.sleep_mode) — dla wygaszenia po bezczynności to wciąż "idle"
+        dopóki Claude nie zmieni stanu (a nie po prostu upływ czasu)."""
         try:
             m = KS.current_mode()
-            if m is None:
+            if m == self.sleep_mode:
                 return
             self.mode = m
             self.enterMode_(m)
@@ -318,6 +327,9 @@ class Controller(NSObject):
                     self.startFast()          # speak = 28 fps, reszta 21
                 self.reposition_(False)
 
+            if self.mode == "idle" and now - self.idle_entered >= IDLE_SLEEP_SEC:
+                self.vis_t = 0.0
+
             k = 1.0 - math.exp(-dt / EASE_TAU)
             self.amp += (self.amp_t - self.amp) * k
             self.speed += (self.speed_t - self.speed) * k
@@ -328,8 +340,11 @@ class Controller(NSObject):
             self.phase += self.speed * dt
             hx = 0.5 + self.amp * SWEEP_HALF * _tri(self.phase)
 
-            # zgaszone i wyciemnione do zera -> panele z ekranu, wolny poll
-            if self.mode is None and self.vis == 0.0:
+            # wyciemnione do zera (KR wyłączony ALBO bezczynność > IDLE_SLEEP_SEC)
+            # -> panele z ekranu, wolny poll; sleep_mode pamięta co uśpiło, żeby
+            # poll_ wiedział, na jaką zmianę czekać (idle -> idle to nie zmiana)
+            if self.vis_t == 0.0 and self.vis == 0.0:
+                self.sleep_mode = self.mode
                 self.hidePanels()
                 self.startSlow()
                 return
@@ -416,6 +431,8 @@ def main():
     ctrl.applied_core = [None] * N_LED
     ctrl.applied_vis = -1.0
     ctrl.mode = "__init__"
+    ctrl.sleep_mode = None
+    ctrl.idle_entered = time.monotonic()
     ctrl.speak = None
     ctrl.amp = ctrl.amp_t = 0.0
     ctrl.speed = ctrl.speed_t = SPEED_IDLE
