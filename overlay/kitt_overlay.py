@@ -239,7 +239,10 @@ class Controller(NSObject):
                 head = HEAD_BRIGHT * math.exp(-(d / HEAD_SIGMA) ** 2)
                 flare = _clamp((reach - abs(d)) / SPEAK_EDGE) * HEAD_BRIGHT
                 des = head if head > flare else flare
-                led[i] = des if des > led[i] else led[i] * decay
+                # afterglow: led co najmniej = bieżąca głowa, inaczej gaśnie z
+                # poprzedniej wartości. max() zamiast if — inaczej przy des==led
+                # led skakał des<->des*decay co klatkę (migotanie w spoczynku).
+                led[i] = des if des > led[i] * decay else led[i] * decay
 
             CATransaction.begin()
             CATransaction.setDisableActions_(True)
