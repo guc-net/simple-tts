@@ -68,8 +68,8 @@ FLOOR = 0.04                   # tło zgaszonego leda (blisko 0 = gaśnie)
 IDLE_HALF = 1.8                # sekundy na jeden przejazd L->R
 THINK_SPEEDUP = 2.6
 BUILD_FPS = 30                 # gęstość klatek krycia (gładkość)
-SPEAK_REACH_BASE = 0.05        # minimalny „rozstaw ust" (cisza)
-SPEAK_REACH_GAIN = 0.75        # o ile rozszerza się przy pełnej głośności
+SPEAK_REACH_BASE = 0.04        # minimalny „rozstaw ust" (cisza)
+SPEAK_REACH_GAIN = 0.40        # o ile rozszerza się przy pełnej głośności (mniej = węziej)
 SPEAK_EDGE = 0.06              # miękkość krawędzi rozbłysku
 DIP_SEC = 0.30                 # delikatne przygaszenie przy przełączaniu stanu
 LOG = os.path.expanduser("~/.claude/simple-tts-overlay.log")
