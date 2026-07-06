@@ -67,6 +67,7 @@ FLOOR = 0.02                   # krycie zgaszonej poświaty (cela zostaje ciemna
 HEAD_BRIGHT = 1.0
 HEAD_SIGMA = 0.07              # ile cel obejmuje świecąca głowa
 CORE_THRESH = 0.55             # od jakiej jasności zapala się biało-gorący rdzeń
+CELL_OPACITY = 0.12            # krycie ciemnej obudowy — mocno prześwituje tło (overlay)
 SWEEP_HALF = 0.44              # połowa szerokości przejazdu (0.5 = do krawędzi)
 SPEED_IDLE = 0.0               # w ciszy faza zamrożona -> kropka stoi na środku
 SPEED_THINK = 0.52             # wolniejszy przejazd
@@ -184,7 +185,9 @@ def make_panel(spr):
     container.setOpacity_(0.0)
     glows, cores = [], []
     for x in _XS:                                   # obudowa -> poświata -> rdzeń
-        container.addSublayer_(_mk_layer(spr["cell"], CELL_W, CELL_H, x, False))
+        cell = _mk_layer(spr["cell"], CELL_W, CELL_H, x, False)
+        cell.setOpacity_(CELL_OPACITY)              # mocno prześwituje (overlay)
+        container.addSublayer_(cell)
         g = _mk_layer(spr["glow"], GLOW_D, GLOW_D, x, True)
         g.setOpacity_(FLOOR)
         container.addSublayer_(g)
