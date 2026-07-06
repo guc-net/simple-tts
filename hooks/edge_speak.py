@@ -27,14 +27,22 @@ Payload keys: edge_voice, edge_rate, text, say_voice, say_rate, cache_max_mb,
 intro_sound.
 """
 
+import json
 import math
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 import audio_cache as ac
+
+# Obwiednia głośności odtwarzanego audio dla nakładki KITT (modulator „gada"
+# w rytm tego, co słychać). Zapisywana tuż przed afplay; nakładka ją czyta.
+SPEAK_STATE_PATH = os.path.expanduser("~/.claude/simple-tts-speak.json")
+_ENV_DT = 0.04            # okno obwiedni (s)
+_ENV_LO, _ENV_HI = -50.0, -15.0   # dB -> 0..1 (dolina syreny .. szczyt wyjca)
 
 # Wall-clock cap for synthesis. Generous because the very first `uvx edge-tts`
 # run downloads the package before it can synthesize; later runs are quick.
@@ -57,6 +65,57 @@ def _play(path):
         return True
     except OSError:
         return False
+
+
+def _envelope(path):
+    """Znormalizowana obwiednia RMS (0..1) odtwarzanego audio, okno _ENV_DT,
+    przez ffmpeg astats. Pusta lista przy jakimkolwiek problemie."""
+    n = int(_ENV_DT * 8000)
+    cmd = ['ffmpeg', '-hide_banner', '-nostats', '-i', path, '-af',
+           f'aresample=8000,asetnsamples=n={n}:p=0,'
+           f'astats=metadata=1:reset=1,'
+           f'ametadata=print:key=lavfi.astats.Overall.RMS_level:file=-',
+           '-f', 'null', '-']
+    out = subprocess.run(cmd, capture_output=True, text=True, timeout=15).stdout
+    env = []
+    for line in out.splitlines():
+        if 'RMS_level=' not in line:
+            continue
+        try:
+            v = float(line.split('=')[1])
+        except (ValueError, IndexError):
+            continue
+        if v != v or v <= -120:                 # nan / -inf (cisza)
+            env.append(0.0)
+        else:
+            env.append(max(0.0, min(1.0, (v - _ENV_LO) / (_ENV_HI - _ENV_LO))))
+    return env
+
+
+def _write_speak_envelope(path):
+    """Policz obwiednię `path` i zapisz stan mowy dla nakładki (best-effort)."""
+    if not shutil.which('ffmpeg'):
+        return
+    try:
+        env = _envelope(path)
+    except Exception:
+        return
+    if not env:
+        return
+    try:
+        tmp = SPEAK_STATE_PATH + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump({'start': time.time(), 'dt': _ENV_DT, 'env': env}, f)
+        os.replace(tmp, SPEAK_STATE_PATH)
+    except OSError:
+        pass
+
+
+def _play_with_envelope(path, want_env):
+    """Odtwórz; gdy want_env, najpierw zapisz obwiednię (tryb KITT aktywny)."""
+    if want_env:
+        _write_speak_envelope(path)
+    return _play(path)
 
 
 def _sound_path(name):
@@ -151,16 +210,19 @@ def _play_speech(path, payload):
     """Play the speech, mixing in the background sound when enabled; on any mix
     failure play the plain speech. Returns True if something played."""
     mixed = _mix_kitt(path, payload)
+    # Obwiednię liczymy tylko w trybie KITT (gdy nakładka jej użyje) — to samo
+    # kryterium, co syrena: intro_sound != none/absent.
+    want_env = payload.get('intro_sound') not in (None, 'none')
     if mixed:
         try:
-            if _play(mixed):
+            if _play_with_envelope(mixed, want_env):
                 return True
         finally:
             try:
                 os.unlink(mixed)
             except OSError:
                 pass
-    return _play(path)
+    return _play_with_envelope(path, want_env)
 
 
 def _payload_from_env():
