@@ -13,17 +13,13 @@ sys.path.insert(0, OVERLAY_DIR)
 import kitt_state as KS  # noqa: E402
 
 
-class _Run:
-    def __init__(self, out=""):
-        self.stdout = out
-
-
 @pytest.fixture
 def paths(tmp_path, monkeypatch):
     monkeypatch.setattr(KS, "CONFIG_PATH", str(tmp_path / "config.json"))
+    monkeypatch.setattr(KS, "STATE_PATH", str(tmp_path / "state.json"))
     monkeypatch.setattr(KS, "BUSY_DIR", str(tmp_path / "busy.d"))
-    # domyślnie: cisza (pgrep nic nie zwraca)
-    monkeypatch.setattr(KS.subprocess, "run", lambda *a, **k: _Run(""))
+    # domyślnie: cisza (brak procesów audio)
+    monkeypatch.setattr(KS, "_running_process_names", lambda: set())
     return tmp_path
 
 
@@ -40,8 +36,9 @@ def _busy(paths, name="s1"):
 
 
 def _audio(monkeypatch, on=True):
-    monkeypatch.setattr(KS.subprocess, "run",
-                        lambda *a, **k: _Run("4242\n" if on else ""))
+    monkeypatch.setattr(KS, "_tts_active", lambda: on)
+    monkeypatch.setattr(KS, "_running_process_names",
+                        lambda: {"afplay"} if on else set())
 
 
 def test_mode_none_when_not_configured(paths):
@@ -94,3 +91,16 @@ def test_is_speaking_true_on_afplay(paths, monkeypatch):
 
 def test_is_speaking_false_when_silent(paths):
     assert KS.is_speaking() is False
+
+
+def test_no_speak_without_tts_process(paths, monkeypatch):
+    # afplay innej apki gra, ale nie ma naszego procesu TTS -> nie "speak"
+    _config(paths)
+    monkeypatch.setattr(KS, "_running_process_names", lambda: {"afplay"})
+    assert KS.current_mode() == "idle"
+
+
+def test_tts_active_gate_true_when_pid_alive(paths, monkeypatch):
+    (paths / "state.json").write_text(json.dumps({"pid": 4242, "ts": 0}))
+    monkeypatch.setattr(KS.os, "kill", lambda pid, sig: None)
+    assert KS._tts_active() is True
