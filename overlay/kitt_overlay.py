@@ -61,12 +61,12 @@ SCALE = 2
 Y_OFFSET = 6
 RENDER_FPS = 28
 MODE_CHECK_SEC = 0.18
-N_LED = 31
-EDGE = 16.0
-LED_D = 30
-FLOOR = 0.03                   # krycie zgaszonego leda
+N_LED = 13                     # dyskretne diody (jak segmenty w referencji)
+EDGE = 22.0
+FLOOR = 0.02                   # krycie zgaszonej poświaty (cela zostaje ciemna)
 HEAD_BRIGHT = 1.0
-HEAD_SIGMA = 0.038             # promień jasnej głowy (mniejszy = wyraźniejsza kropka)
+HEAD_SIGMA = 0.07              # ile cel obejmuje świecąca głowa
+CORE_THRESH = 0.55             # od jakiej jasności zapala się biało-gorący rdzeń
 SWEEP_HALF = 0.44              # połowa szerokości przejazdu (0.5 = do krawędzi)
 SPEED_IDLE = 0.0               # w ciszy faza zamrożona -> kropka stoi na środku
 SPEED_THINK = 0.52             # wolniejszy przejazd
@@ -86,6 +86,12 @@ _lock_handle = None
 _MIDY = H / 2.0
 _POS = [i / (N_LED - 1) for i in range(N_LED)]
 _XS = [EDGE + p * (W - 2 * EDGE) for p in _POS]
+# geometria celi (pt)
+_SPACING = (W - 2 * EDGE) / (N_LED - 1)
+CELL_W = _SPACING * 0.90
+CELL_H = H * 0.72
+GLOW_D = _SPACING * 0.86
+CORE_D = _SPACING * 0.44
 
 
 def _log(msg):
@@ -115,14 +121,22 @@ def _tri(phase):
     return 1.0 - 4.0 * abs(ph - 0.5)          # -1 .. +1 .. -1
 
 
-def _led_cgimage():
-    px = int(LED_D * SCALE)
-    raw = KF.dot_sprite(px, boost=1.6).tobytes()
+def _cg(pil):
+    w, h = pil.size
+    raw = pil.tobytes()
     prov = CGDataProviderCreateWithData(None, raw, len(raw), None)
-    cg = CGImageCreate(px, px, 8, 32, px * 4, _CS,
+    cg = CGImageCreate(w, h, 8, 32, w * 4, _CS,
                        kCGImageAlphaLast | kCGBitmapByteOrderDefault,
                        prov, None, False, 0)
     return cg, raw
+
+
+def _sprites():
+    """CGImage poświaty, rdzenia i obudowy celi (+ bajty do utrzymania)."""
+    glow, r1 = _cg(KF.dot_sprite(int(GLOW_D * SCALE), boost=1.5))
+    core, r2 = _cg(KF.core_sprite(int(CORE_D * SCALE)))
+    cell, r3 = _cg(KF.cell_sprite(int(CELL_W * SCALE), int(CELL_H * SCALE)))
+    return {"glow": glow, "core": core, "cell": cell}, [r1, r2, r3]
 
 
 def _read_envelope():
@@ -135,7 +149,19 @@ def _read_envelope():
         return None
 
 
-def make_panel(cgimg):
+def _mk_layer(contents, w, h, x, additive):
+    lyr = CALayer.layer()
+    lyr.setBounds_(((0.0, 0.0), (w, h)))
+    lyr.setPosition_((x, _MIDY))
+    lyr.setContentsGravity_("resize")
+    lyr.setContentsScale_(SCALE)
+    lyr.setContents_(contents)
+    if additive:
+        lyr.setCompositingFilter_("additionCompositing")
+    return lyr
+
+
+def make_panel(spr):
     panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
         NSMakeRect(0, 0, W, H), NSWindowStyleMaskNonactivatingPanel,
         NSBackingStoreBuffered, False)
@@ -156,22 +182,21 @@ def make_panel(cgimg):
     container = CALayer.layer()
     container.setFrame_(NSMakeRect(0, 0, W, H))
     container.setOpacity_(0.0)
-    leds = []
-    for x in _XS:
-        led = CALayer.layer()
-        led.setBounds_(((0.0, 0.0), (LED_D, LED_D)))
-        led.setPosition_((x, _MIDY))
-        led.setContentsGravity_("resizeAspect")
-        led.setContentsScale_(SCALE)
-        led.setContents_(cgimg)
-        led.setOpacity_(FLOOR)
-        led.setCompositingFilter_("additionCompositing")   # blask się sumuje
-        container.addSublayer_(led)
-        leds.append(led)
+    glows, cores = [], []
+    for x in _XS:                                   # obudowa -> poświata -> rdzeń
+        container.addSublayer_(_mk_layer(spr["cell"], CELL_W, CELL_H, x, False))
+        g = _mk_layer(spr["glow"], GLOW_D, GLOW_D, x, True)
+        g.setOpacity_(FLOOR)
+        container.addSublayer_(g)
+        glows.append(g)
+        c = _mk_layer(spr["core"], CORE_D, CORE_D, x, True)
+        c.setOpacity_(0.0)
+        container.addSublayer_(c)
+        cores.append(c)
     view.layer().addSublayer_(container)
     panel.setContentView_(view)
     panel.orderFrontRegardless()
-    return panel, container, leds
+    return panel, container, glows, cores
 
 
 def top_center(sf):
@@ -247,12 +272,15 @@ class Controller(NSObject):
             CATransaction.begin()
             CATransaction.setDisableActions_(True)
             vis = self.vis
-            out = [FLOOR + (1.0 - FLOOR) * _clamp(v) for v in led]
+            glow_op = [FLOOR + (1.0 - FLOOR) * _clamp(v) for v in led]
+            core_op = [_clamp((_clamp(v) - CORE_THRESH) / (1.0 - CORE_THRESH))
+                       for v in led]
             for ent in self.entries:
                 ent["container"].setOpacity_(vis)
-                lyrs = ent["leds"]
+                glows, cores = ent["glows"], ent["cores"]
                 for i in range(N_LED):
-                    lyrs[i].setOpacity_(out[i])
+                    glows[i].setOpacity_(glow_op[i])
+                    cores[i].setOpacity_(core_op[i])
             CATransaction.commit()
         except Exception:
             _log("render FAILED:\n" + traceback.format_exc())
@@ -266,17 +294,18 @@ def main():
     app = NSApplication.sharedApplication()
     app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
 
-    cgimg, raw = _led_cgimage()
+    spr, keep = _sprites()
     entries = []
     for s in NSScreen.screens():
-        panel, container, leds = make_panel(cgimg)
+        panel, container, glows, cores = make_panel(spr)
         panel.setFrameOrigin_(top_center(s.frame()))
-        entries.append({"panel": panel, "container": container, "leds": leds})
-    _log(f"start (sim): {len(entries)} ekran(ów), {N_LED} ledów")
+        entries.append({"panel": panel, "container": container,
+                        "glows": glows, "cores": cores})
+    _log(f"start (celki): {len(entries)} ekran(ów), {N_LED} diod")
 
     ctrl = Controller.alloc().init()
     ctrl.entries = entries
-    ctrl._raw = raw
+    ctrl._raw = keep
     ctrl.led = [FLOOR] * N_LED
     ctrl.mode = "__init__"
     ctrl.speak = None

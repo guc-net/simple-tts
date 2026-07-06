@@ -144,3 +144,35 @@ def dot_sprite(px, boost=1.6):
             p[x, y] = (CORE[0], CORE[1], CORE[2],
                        max(0, min(255, int(255 * a * boost))))
     return img
+
+
+def core_sprite(px, color=(255, 240, 225)):
+    """Zwarty, biało-gorący rdzeń diody (RGBA). Widoczny dopiero przy dużej
+    jasności — daje efekt rozgrzania do bieli jak w referencji."""
+    img = Image.new("RGBA", (px, px), (0, 0, 0, 0))
+    p = img.load()
+    r = px / 2.0
+    for y in range(px):
+        for x in range(px):
+            nx, ny = (x - r) / r, (y - r) / r
+            d = math.sqrt(nx * nx + ny * ny)
+            if d >= 1.0:
+                a = 0.0
+            elif d <= 0.28:
+                a = 1.0
+            else:
+                a = 1.0 - (d - 0.28) / 0.72
+            a = a ** 2
+            p[x, y] = (color[0], color[1], color[2], int(255 * a))
+    return img
+
+
+def cell_sprite(w, h):
+    """Ciemna, zaokrąglona obudowa diody (statyczna) — segmentowany wygląd."""
+    from PIL import ImageDraw
+    img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    rad = int(h * 0.32)
+    d.rounded_rectangle([1, 1, w - 2, h - 2], radius=rad,
+                        fill=(34, 12, 10, 255), outline=(70, 24, 20, 255), width=1)
+    return img
