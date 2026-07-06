@@ -55,11 +55,12 @@ def test_write_speak_envelope_noop_on_empty(monkeypatch, tmp_path):
     assert not (tmp_path / "speak.json").exists()
 
 
-def test_play_with_envelope_respects_want_flag(monkeypatch):
-    calls = []
-    monkeypatch.setattr(es, "_write_speak_envelope", lambda p: calls.append(p))
-    monkeypatch.setattr(es, "_play", lambda p: True)
-    es._play_with_envelope("a.mp3", want_env=False)
-    assert calls == []                       # tryb KITT off -> bez analizy
-    es._play_with_envelope("a.mp3", want_env=True)
-    assert calls == ["a.mp3"]                # tryb KITT on -> obwiednia liczona
+def test_write_speak_envelope_prepends_lead(monkeypatch, tmp_path):
+    # gdy przed głosem gra intro syreny, obwiednia dostaje ciszę z przodu
+    monkeypatch.setattr(es.shutil, "which", lambda n: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(es, "_envelope", lambda p: [0.5, 0.6])
+    monkeypatch.setattr(es, "_ENV_DT", 0.1)
+    monkeypatch.setattr(es, "SPEAK_STATE_PATH", str(tmp_path / "speak.json"))
+    es._write_speak_envelope("voice.mp3", lead=0.3)     # 3 zera (0.3/0.1) + głos
+    d = json.load(open(tmp_path / "speak.json"))
+    assert d["env"] == [0.0, 0.0, 0.0, 0.5, 0.6]

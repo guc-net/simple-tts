@@ -92,8 +92,10 @@ def _envelope(path):
     return env
 
 
-def _write_speak_envelope(path):
-    """Policz obwiednię `path` i zapisz stan mowy dla nakładki (best-effort)."""
+def _write_speak_envelope(path, lead=0.0):
+    """Policz obwiednię SAMEGO GŁOSU `path` (bez syreny) i zapisz stan mowy dla
+    nakładki. `lead` (s) dosuwa obwiednię ciszą z przodu, gdy przed głosem gra
+    intro syreny — modulator jest wtedy płaski i rusza dopiero z głosem."""
     if not shutil.which('ffmpeg'):
         return
     try:
@@ -102,6 +104,8 @@ def _write_speak_envelope(path):
         return
     if not env:
         return
+    if lead > 0:
+        env = [0.0] * int(round(lead / _ENV_DT)) + env
     try:
         tmp = SPEAK_STATE_PATH + '.tmp'
         with open(tmp, 'w') as f:
@@ -109,13 +113,6 @@ def _write_speak_envelope(path):
         os.replace(tmp, SPEAK_STATE_PATH)
     except OSError:
         pass
-
-
-def _play_with_envelope(path, want_env):
-    """Odtwórz; gdy want_env, najpierw zapisz obwiednię (tryb KITT aktywny)."""
-    if want_env:
-        _write_speak_envelope(path)
-    return _play(path)
 
 
 def _sound_path(name):
@@ -211,18 +208,21 @@ def _play_speech(path, payload):
     failure play the plain speech. Returns True if something played."""
     mixed = _mix_kitt(path, payload)
     # Obwiednię liczymy tylko w trybie KITT (gdy nakładka jej użyje) — to samo
-    # kryterium, co syrena: intro_sound != none/absent.
-    want_env = payload.get('intro_sound') not in (None, 'none')
+    # kryterium, co syrena: intro_sound != none/absent. ZAWSZE z samego głosu
+    # (path), a gdy gra miks, dosunięta o intro syreny, żeby modulator ruszał
+    # z głosem (i był czas na przełączenie animacji podczas pierwszego wycia).
+    if payload.get('intro_sound') not in (None, 'none'):
+        _write_speak_envelope(path, _INTRO if mixed else 0.0)
     if mixed:
         try:
-            if _play_with_envelope(mixed, want_env):
+            if _play(mixed):
                 return True
         finally:
             try:
                 os.unlink(mixed)
             except OSError:
                 pass
-    return _play_with_envelope(path, want_env)
+    return _play(path)
 
 
 def _payload_from_env():
