@@ -65,10 +65,25 @@ from Quartz import (  # noqa: E402
     kCGImageAlphaLast,
 )
 
+
 # --- konfiguracja ----------------------------------------------------------
-W, H = 520, 40
+def _menubar_height(default=30.0):
+    """Wysokość macowego paska menu (frame.maxY − visibleFrame.maxY). Listwa
+    KITT ma dokładnie tę wysokość, więc jej dolna krawędź (i obcięcie tła)
+    wypada równo z dołem paska. Fallback, gdy ekranu nie da się odczytać."""
+    try:
+        s = NSScreen.mainScreen()
+        f, vf = s.frame(), s.visibleFrame()
+        h = (f.origin.y + f.size.height) - (vf.origin.y + vf.size.height)
+        return h if h > 1 else default
+    except Exception:
+        return default
+
+
+W = 520
+H = int(round(_menubar_height()))   # listwa dokładnie na wysokość paska menu macOS
 SCALE = 2
-Y_OFFSET = 6
+Y_OFFSET = 0                   # 0 = górna krawędź panelu równo z górą ekranu (nad paskiem menu)
 FPS_SWEEP = 21                 # przejazd idle/think — wolniejszy ruch, mniej klatek
 FPS_SPEAK = 28                 # modulator mowy (obwiednia ma krok 0.04 s)
 MODE_CHECK_SEC = 0.18
@@ -160,13 +175,23 @@ def _sprites():
 
 
 def _read_envelope():
+    """Obwiednia mowy, którą edge_speak zapisuje tuż przed afplay. Odrzucamy
+    NIEŚWIEŻĄ (już wybrzmiałą albo z przyszłości) — inaczej overlay trzymałby
+    zamrożony modulator na starym pliku (np. sprzed godzin) zamiast pokazać
+    animację mowy. None => caller użyje syntetycznego modulatora (pulsowanie),
+    więc mowa i tak „gada", nawet gdy dźwięk poleciał fallbackiem say."""
     try:
         with open(SPEAK_STATE_PATH) as f:
             d = json.load(f)
         env, dt, start = d["env"], float(d["dt"]), float(d["start"])
-        return (env, dt, start) if env else None
     except (OSError, ValueError, KeyError):
         return None
+    if not env:
+        return None
+    age = time.time() - start
+    if age < -0.5 or age > len(env) * dt + 0.5:   # z przyszłości albo już wybrzmiała
+        return None
+    return (env, dt, start)
 
 
 def _mk_layer(contents, w, h, x, y=_MIDY):
@@ -179,8 +204,16 @@ def _mk_layer(contents, w, h, x, y=_MIDY):
     return lyr
 
 
+class KittPanel(NSPanel):
+    # macOS domyślnie przycina okno tak, by jego górna krawędź nie weszła nad
+    # pasek menu (constrainFrameRect:toScreen:). Zwracamy rect bez zmian, żeby
+    # nakładka mogła usiąść NA pasku menu, na samej górze ekranu.
+    def constrainFrameRect_toScreen_(self, frameRect, screen):
+        return frameRect
+
+
 def make_panel(spr):
-    panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+    panel = KittPanel.alloc().initWithContentRect_styleMask_backing_defer_(
         NSMakeRect(0, 0, W, H), NSWindowStyleMaskNonactivatingPanel,
         NSBackingStoreBuffered, False)
     panel.setLevel_(NSScreenSaverWindowLevel)
@@ -326,6 +359,10 @@ class Controller(NSObject):
                     self.mode = m
                     self.enterMode_(m)
                     self.startFast()          # speak = 28 fps, reszta 21
+                elif m == "speak" and self.speak is None:
+                    # obwiednia mogła się zapisać chwilę PO wejściu w speak
+                    # (albo dogania fallback) — dociągnij ją, gdy się pojawi
+                    self.speak = _read_envelope()
                 self.reposition_(False)
 
             if self.mode == "idle" and now - self.idle_entered >= IDLE_SLEEP_SEC:

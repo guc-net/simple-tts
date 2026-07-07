@@ -49,13 +49,91 @@ _ENV_LO, _ENV_HI = -50.0, -15.0   # dB -> 0..1 (dolina syreny .. szczyt wyjca)
 SYNTH_TIMEOUT = 30
 
 
-def _say(payload):
-    """Fallback: speak through the local macOS `say` command (blocking)."""
+# Subtelne obniżenie głosu fallbacku `say` (resample+atempo — czystego pitchu
+# SSML jak w edge dla `say` nie ma). <1 = niżej; tempo zachowane. Trzymane
+# blisko 1.0, bo resampling mąci spółgłoski i pogarsza zrozumiałość mniej
+# wyraźnego głosu `say`. Przy 1.0 pitch wyłączony (zostaje wycie + chorus).
+_SAY_PITCH = 0.96
+
+
+def _say_raw(payload):
+    """Ostateczny fallback: goły głos macOS `say`, odtwarzany wprost (blocking)."""
     try:
         subprocess.run(['say', '-v', payload['say_voice'],
                         '-r', str(payload['say_rate']), payload['text']])
     except OSError as e:
         print(f"edge_speak say fallback error: {e}", file=sys.stderr)
+
+
+def _say_to_file(payload):
+    """Renderuj `say` do temp AIFF, żeby dało się zmiksować z syreną. None gdy
+    `say` zawiedzie (wtedy caller gra gołym _say_raw)."""
+    fd, tmp = tempfile.mkstemp(prefix='simple-tts-say-', suffix='.aiff')
+    os.close(fd)
+    try:
+        r = subprocess.run(['say', '-v', payload['say_voice'],
+                            '-r', str(payload['say_rate']),
+                            '-o', tmp, payload['text']],
+                           capture_output=True, timeout=SYNTH_TIMEOUT)
+        if r.returncode == 0 and os.path.getsize(tmp) > 0:
+            return tmp
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+    return None
+
+
+def _pitch_down(path, factor):
+    """Obniż wysokość audio przez resample+atempo (jedyna droga dla `say` — brak
+    rubberbanda w tym ffmpegu). factor<1 = niżej, tempo zachowane. None gdy
+    ffmpeg brakuje albo pada — caller gra wtedy nieobniżony głos."""
+    if factor == 1.0 or not shutil.which('ffmpeg'):
+        return None
+    fd, out = tempfile.mkstemp(prefix='simple-tts-saylow-', suffix='.aiff')
+    os.close(fd)
+    graph = (f"aresample=44100,asetrate={int(44100 * factor)},"
+             f"aresample=44100,atempo={1.0 / factor:.4f}")
+    try:
+        r = subprocess.run(['ffmpeg', '-y', '-i', path, '-af', graph, out],
+                           capture_output=True, timeout=20)
+    except (OSError, subprocess.TimeoutExpired):
+        r = None
+    if r is None or r.returncode != 0 or _empty(out):
+        try:
+            os.unlink(out)
+        except OSError:
+            pass
+        return None
+    return out
+
+
+def _say(payload):
+    """KITT-owy fallback: renderuje `say` do pliku, w trybie KITT delikatnie
+    obniża głos i puszcza przez ten sam miks z syreną co edge — dostaje wycie,
+    chorus i obwiednię dla nakładki. Przy braku ffmpeg / błędzie gra goły `say`
+    (a _play_speech i tak sam schodzi do czystego głosu, gdy miks padnie)."""
+    speech = _say_to_file(payload)
+    if speech is None:
+        _say_raw(payload)
+        return
+    extra = None
+    try:
+        if payload.get('intro_sound') not in (None, 'none'):
+            extra = _pitch_down(speech, _SAY_PITCH)   # subtelny pitch tylko w KITT
+        if not _play_speech(extra or speech, payload):
+            _say_raw(payload)
+    except Exception:
+        _say_raw(payload)
+    finally:
+        for p in (speech, extra):
+            if p:
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
 
 
 def _play(path):
@@ -143,6 +221,9 @@ _FADE = 0.10        # fade-to-zero at the very end
 # Bardzo delikatny chorus na głosie w miksie KITT — syntetyczny połysk bez
 # zniekształcenia (dobrany razem z pitchem -20Hz syntezy, patrz edge_pitch).
 _CHORUS = "chorus=0.7:0.9:55:0.4:0.25:2"
+# Głośności w miksie: syrena odrobinę ciszej względem głosu (było 1.7 syreny).
+_SIREN_VOL = 1.45   # tło/syrena KITT
+_VOICE_VOL = 1.3    # głos lektora
 
 
 def _mix_kitt(speech_path, payload):
@@ -170,10 +251,10 @@ def _mix_kitt(speech_path, payload):
     delay_ms = int(_INTRO * 1000)
     graph = (
         f"[0:a]aformat=sample_rates=44100:channel_layouts=stereo,"
-        f"atrim=0:{end:.3f},asetpts=PTS-STARTPTS,volume=1.7,"
+        f"atrim=0:{end:.3f},asetpts=PTS-STARTPTS,volume={_SIREN_VOL},"
         f"afade=t=out:st={fade_start:.3f}:d={_FADE}[kitt];"
         f"[1:a]{_CHORUS},"
-        f"aformat=sample_rates=44100:channel_layouts=stereo,volume=1.3,"
+        f"aformat=sample_rates=44100:channel_layouts=stereo,volume={_VOICE_VOL},"
         f"adelay={delay_ms}|{delay_ms},apad=whole_dur={end:.3f},asplit=2[sc][sp];"
         f"[kitt][sc]sidechaincompress=threshold=0.04:ratio=9:attack=15:"
         f"release=250:makeup=1[duck];"
@@ -271,11 +352,14 @@ def main():
     os.close(fd)
     try:
         try:
+            # --rate/--pitch przez '=' — wartość ujemna (np. -20Hz) zaczyna się
+            # od '-', więc jako osobny argument argparse edge-tts bierze ją za
+            # flagę ("expected one argument") i synteza pada w fallback say.
             result = subprocess.run(
                 ['uvx', 'edge-tts',
                  '--voice', payload['edge_voice'],
-                 '--rate', payload.get('edge_rate', '+0%'),
-                 '--pitch', payload.get('edge_pitch', '+0Hz'),
+                 f"--rate={payload.get('edge_rate', '+0%')}",
+                 f"--pitch={payload.get('edge_pitch', '+0Hz')}",
                  '--text', text,
                  '--write-media', tmp],
                 capture_output=True, timeout=SYNTH_TIMEOUT,
