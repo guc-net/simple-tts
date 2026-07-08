@@ -1,5 +1,5 @@
 ---
-description: "Mute or unmute simple-tts speech, toggle Knight Rider mode (KITT siren + scanner overlay), and manage the audio cache. Usage: /simple-tts:tts on|off|status|knight-rider [on|off]|cache [stats|prune|clear]."
+description: "Mute or unmute simple-tts speech, toggle Knight Rider mode (KITT siren + scanner overlay), pick the overlay theme (kitt/cylon/hal/ekg/matrix/lava), and manage the audio cache. Usage: /simple-tts:tts on|off|status|knight-rider [on|off]|theme [name]|cache [stats|prune|clear]."
 user_invocable: true
 ---
 
@@ -52,12 +52,41 @@ print('knight_rider =', c.get('knight_rider', True))
 
 Pass the user's `on`/`off` as the argument. Confirm the resulting state (e.g. "Tryb Knight Rider włączony (syrena + skaner)." / "…wyłączony."). The overlay reacts within a second; the siren applies to the next spoken line.
 
+## /tts theme [name]
+
+Pick the **overlay animation theme** — the `overlay_theme` config key. Available
+themes: `kitt` (Knight Rider scanner, default), `cylon` (Battlestar Galactica eye),
+`hal` (HAL 9000 red eye), `ekg` (heart monitor trace), `matrix` (digital rain),
+`lava` (plasma). The running overlay picks the change up live (within a second),
+no restart needed. No argument reports the current theme and lists the options.
+
+```bash
+python3 -c "
+import json, os, sys
+p = os.path.expanduser('~/.claude/simple-tts-config.json')
+themes = ('kitt', 'cylon', 'hal', 'ekg', 'matrix', 'lava')
+with open(p) as f: c = json.load(f)
+arg = (sys.argv[1] if len(sys.argv) > 1 else '').strip().lower()
+if arg:
+    if arg not in themes:
+        print('nieznany motyw:', arg, '| dostępne:', ', '.join(themes)); sys.exit(1)
+    c['overlay_theme'] = arg
+    with open(p, 'w') as f: json.dump(c, f, indent=2, ensure_ascii=False)
+print('overlay_theme =', c.get('overlay_theme', 'kitt'))
+" ${ARG:-}
+```
+
+Pass the user's theme name as the argument. Confirm the resulting theme in Polish
+(e.g. "Motyw nakładki: hal — czerwone oko HAL 9000."). Remind that the overlay
+itself is toggled by `knight-rider on|off` if it is currently off.
+
 ## /tts status
 
 Read the config and report:
 - enabled: `enabled` key (missing key = enabled)
 - voice, rate, language
 - Knight Rider mode: `knight_rider` key (missing key = on) — siren bed + scanner overlay
+- overlay theme: `overlay_theme` key (missing key = kitt)
 - quiet hours, if `quiet_hours` is set (speech is silenced between start and end)
 
 ## /tts cache [stats|prune|clear]

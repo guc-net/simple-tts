@@ -13,7 +13,13 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
-from tts_utils import language_code, load_config, read_hook_input, speak
+from tts_utils import (
+    language_code,
+    load_config,
+    read_hook_input,
+    set_session_attention,
+    speak,
+)
 
 DEBUG_LOG = os.path.expanduser("~/.claude/simple-tts-notification-debug.log")
 DEBUG_MAX_LINES = 200
@@ -100,6 +106,11 @@ def main():
 
     input_data = read_hook_input()
     debug(input_data, config.get('debug', False))
+
+    # Sesja czeka na użytkownika -> tryb "attention" nakładki. Znacznik idzie
+    # niezależnie od mute/quiet hours (wizual jest osobny od mowy); zdejmuje go
+    # nowy prompt, wykonanie narzędzia (zgoda udzielona) albo koniec tury.
+    set_session_attention(input_data.get('session_id'), True)
 
     msgs = MESSAGES.get(language_code(config), MESSAGES['en'])
     tts_text = translate_notification(input_data.get('message', ''), msgs)

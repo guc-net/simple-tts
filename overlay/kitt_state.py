@@ -1,14 +1,22 @@
-"""Wybór trybu nakładki KITT ze stanu simple-tts (tylko stdlib, testowalne).
+"""Wybór trybu nakładki ze stanu simple-tts (tylko stdlib, testowalne).
 
 Agregacja po WSZYSTKICH sesjach Claude Code:
-  speak -> ktokolwiek właśnie odtwarza dźwięk (żywy proces afplay/say)
-  think -> ktokolwiek pracuje (świeży plik w katalogu busy)
-  idle  -> nic z powyższych
-  None  -> nakładka wyłączona (brak configu lub knight_rider=false)
+  speak     -> ktokolwiek właśnie odtwarza dźwięk (żywy proces afplay/say)
+  attention -> ktoś czeka na użytkownika (zgoda/odpowiedź; świeży znacznik
+               w katalogu attention, stawiany przez Notification hook)
+  think     -> ktokolwiek pracuje (świeży plik w katalogu busy)
+  idle      -> nic z powyższych
+  None      -> nakładka wyłączona (brak configu lub knight_rider=false)
 
-Precedencja: speak > think > idle (mowa kogokolwiek wygrywa z myśleniem).
+Precedencja: speak > attention > think > idle (mowa kogokolwiek wygrywa;
+oczekiwanie na użytkownika wygrywa z myśleniem — inaczej nie widać różnicy
+między „pracuje" a „utknął na promptcie o uprawnienia").
 „speak" jest wykrywane po realnym procesie odtwarzania, więc modulator rusza
 się dokładnie wtedy, gdy leci dźwięk (a nie podczas syntezowania/ładowania).
+
+Poza trybem nakładka dostaje też snapshot(): liczbę pracujących sesji (busy)
+i wiek najstarszego znacznika pracy (age) — motywy używają ich do kropek
+licznika sesji i przyspieszania animacji przy długiej robocie.
 
 Ścieżki jako stałe modułu, żeby testy mogły je monkeypatchować.
 """
@@ -25,7 +33,12 @@ STATE_PATH = os.path.expanduser("~/.claude/simple-tts-state.json")
 # Katalog znaczników „sesja pracuje": jeden plik na sesję (touch/rm przez hooki).
 BUSY_DIR = os.path.expanduser("~/.claude/simple-tts-busy.d")
 BUSY_STALE_SEC = 900          # znacznik starszy niż 15 min = osierocony, ignoruj
+# Katalog znaczników „sesja czeka na użytkownika" (zgoda na narzędzie itp.).
+ATTENTION_DIR = os.path.expanduser("~/.claude/simple-tts-attention.d")
+ATTENTION_STALE_SEC = 1800    # czekanie bywa długie, ale osierocone znaczniki
+                              # nie mogą migać w nieskończoność -> 30 min
 AUDIO_PROCS = ("afplay", "say")
+DEFAULT_THEME = "kitt"
 
 
 def _read_json(path):
@@ -140,28 +153,70 @@ def is_speaking():
     return any(p in names for p in AUDIO_PROCS)
 
 
-def is_busy():
-    """True gdy którakolwiek sesja pracuje (świeży znacznik w BUSY_DIR)."""
+def _fresh_marker_ages(dir_path, stale_sec):
+    """Wieki (sekundy) świeżych znaczników per-sesja w katalogu; osierocone
+    (starsze niż stale_sec) pomijamy."""
     try:
-        names = os.listdir(BUSY_DIR)
+        names = os.listdir(dir_path)
     except OSError:
-        return False
+        return []
     now = time.time()
+    ages = []
     for name in names:
         try:
-            if now - os.path.getmtime(os.path.join(BUSY_DIR, name)) < BUSY_STALE_SEC:
-                return True
+            age = now - os.path.getmtime(os.path.join(dir_path, name))
         except OSError:
-            pass
-    return False
+            continue
+        if age < stale_sec:                  # mtime z przyszłości -> traktuj jak świeży
+            ages.append(max(0.0, age))
+    return ages
+
+
+def is_busy():
+    """True gdy którakolwiek sesja pracuje (świeży znacznik w BUSY_DIR)."""
+    return bool(_fresh_marker_ages(BUSY_DIR, BUSY_STALE_SEC))
+
+
+def busy_count():
+    """Ile sesji pracuje równolegle (świeże znaczniki busy)."""
+    return len(_fresh_marker_ages(BUSY_DIR, BUSY_STALE_SEC))
+
+
+def busy_age():
+    """Wiek najstarszego świeżego znacznika busy (sekundy) — jak długo trwa
+    najdłuższa bieżąca robota. 0.0 gdy nikt nie pracuje."""
+    ages = _fresh_marker_ages(BUSY_DIR, BUSY_STALE_SEC)
+    return max(ages) if ages else 0.0
+
+
+def is_attention():
+    """True gdy którakolwiek sesja czeka na użytkownika (zgoda/odpowiedź)."""
+    return bool(_fresh_marker_ages(ATTENTION_DIR, ATTENTION_STALE_SEC))
+
+
+def theme_name():
+    """Nazwa motywu nakładki z configu (overlay_theme), znormalizowana.
+    Nieznane nazwy rozstrzyga rejestr motywów (fallback na kitt)."""
+    cfg = _read_json_cached(CONFIG_PATH)
+    if not cfg:
+        return DEFAULT_THEME
+    name = cfg.get("overlay_theme", DEFAULT_THEME)
+    return str(name).strip().lower() or DEFAULT_THEME
 
 
 def current_mode():
-    """'speak' | 'think' | 'idle' | None (wyłączone)."""
+    """'speak' | 'attention' | 'think' | 'idle' | None (wyłączone)."""
     if not overlay_enabled():
         return None
     if is_speaking():
         return "speak"
+    if is_attention():
+        return "attention"
     if is_busy():
         return "think"
     return "idle"
+
+
+def snapshot():
+    """Pełny stan dla nakładki: {'mode','busy','age'} — jeden odczyt na tick."""
+    return {"mode": current_mode(), "busy": busy_count(), "age": busy_age()}

@@ -1,29 +1,25 @@
 #!/usr/bin/env python3
-"""Nakładka KITT (Cocoa) dla simple-tts — ciągła symulacja świateł.
+"""Nakładka simple-tts (Cocoa) — host motywów animacji na pasku menu.
 
-Jedna spójna symulacja klatka-po-klatce (nie osobne animacje per stan):
-  * głowa ma PŁYNNIE animowaną pozycję (amplituda i prędkość dochodzą do
-    docelowych wartości z wygładzeniem) — więc kropka płynnie przesuwa się i
-    PRZYSPIESZA między stanami, bez skoków; przejścia to jedno płynne działanie,
-  * ogon powstaje z WYGASANIA ledów w miejscu (afterglow) — cienie zanikają
-    tam, gdzie są, nie jadą,
-  * ledy stoją w miejscu; sterujemy tylko ich kryciem.
+Host odpowiada za wszystko, co wspólne: panele per ekran, timery (szybki
+render <-> wolny poll po wygaszeniu), odczyt stanu (kitt_state.snapshot),
+obwiednię mowy, płynne wygaszanie/budzenie i aplikowanie aktualizacji na
+CALayer-ach. SAM WYGLĄD (sprite'y, warstwy, ruch) dostarcza motyw z themes/
+(klucz `overlay_theme` w configu: kitt | cylon | hal | ekg | matrix | lava);
+motyw można przełączać na żywo — host przebudowuje warstwy bez restartu.
 
 Stany (kitt_state):
-  idle  -> wolny przejazd prawo<->lewo (myśli = szybciej); po IDLE_SLEEP_SEC
-           ciągłego idle nakładka gaśnie i chowa się (jak None), budzi się
-           dopiero gdy stan realnie się zmieni (nie przy samym upływie czasu)
-  think -> kropka rozpędza się i przejeżdża prawo<->lewo (ogon gaśnie za nią)
-  speak -> na środku, symetryczny rozbłysk w rytm głośności głosu (obwiednia)
-  None  -> wygaszone (panel schodzi z ekranu, timer zwalnia do 1 s)
+  idle      -> spokojna animacja; po IDLE_SLEEP_SEC ciągłego idle nakładka
+               gaśnie i chowa się, budzi się gdy stan realnie się zmieni
+  think     -> ktoś pracuje (żywsza animacja; motywy przyspieszają z wiekiem
+               najstarszej roboty i pokazują kropki licznika sesji)
+  speak     -> animacja w rytm głośności głosu (obwiednia z edge_speak)
+  attention -> ktoś czeka na użytkownika (bursztynowe miganie)
+  None      -> wygaszone (panel schodzi z ekranu, timer zwalnia do 1 s)
 
-Wydajność (WindowServer to główny koszt overlayu, nie Python):
-  * ZERO filtrów kompozycji (additionCompositing wymuszał offscreen rendering
-    w WindowServerze przy każdej klatce) — zwykłe source-over,
-  * cała statyka (ciemny pas + obudowy diod) wypalona w JEDEN obraz/warstwę,
-  * dirty-check: setOpacity_ tylko gdy wartość realnie się zmieniła; klatka bez
-    zmian nie otwiera nawet CATransaction (w ciszy speak: zero pracy),
-  * po wygaszeniu panele są orderOut_ a szybki timer staje — zostaje wolny poll.
+Wydajność: motywy emitują aktualizacje tylko przy realnej zmianie (dirty-check
+w themes/base), klatka bez zmian nie otwiera nawet CATransaction; po wygaszeniu
+panele są orderOut_ a szybki timer staje — zostaje wolny poll.
 
 Pływa nad pełnym ekranem, pojedyncza instancja. Wymaga pyobjc Cocoa+Quartz, Pillow.
 """
@@ -38,7 +34,6 @@ import traceback
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import kitt_frame as KF  # noqa: E402
 import kitt_state as KS  # noqa: E402
 from AppKit import (  # noqa: E402
     NSApplication,
@@ -64,13 +59,14 @@ from Quartz import (  # noqa: E402
     kCGBitmapByteOrderDefault,
     kCGImageAlphaLast,
 )
+from themes import get_theme  # noqa: E402
 
 
 # --- konfiguracja ----------------------------------------------------------
 def _menubar_height(default=30.0):
     """Wysokość macowego paska menu (frame.maxY − visibleFrame.maxY). Listwa
-    KITT ma dokładnie tę wysokość, więc jej dolna krawędź (i obcięcie tła)
-    wypada równo z dołem paska. Fallback, gdy ekranu nie da się odczytać."""
+    ma dokładnie tę wysokość, więc jej dolna krawędź wypada równo z dołem
+    paska. Fallback, gdy ekranu nie da się odczytać."""
     try:
         s = NSScreen.mainScreen()
         f, vf = s.frame(), s.visibleFrame()
@@ -83,47 +79,19 @@ def _menubar_height(default=30.0):
 W = 520
 H = int(round(_menubar_height()))   # listwa dokładnie na wysokość paska menu macOS
 SCALE = 2
-Y_OFFSET = 0                   # 0 = górna krawędź panelu równo z górą ekranu (nad paskiem menu)
-FPS_SWEEP = 21                 # przejazd idle/think — wolniejszy ruch, mniej klatek
-FPS_SPEAK = 28                 # modulator mowy (obwiednia ma krok 0.04 s)
+Y_OFFSET = 0                   # 0 = górna krawędź panelu równo z górą ekranu
 MODE_CHECK_SEC = 0.18
 SCREEN_CHECK_SEC = 2.0
 POLL_SEC = 1.0                 # wolny timer, gdy nakładka wygaszona
 IDLE_SLEEP_SEC = 60.0          # ciągły idle dłużej niż to -> zgaśnij i schowaj się
-N_LED = 13                     # dyskretne diody (jak segmenty w referencji)
-EDGE = 22.0
-FLOOR = 0.10                   # krycie zgaszonej diody (kropka ledwo się tli)
-HEAD_BRIGHT = 1.0
-HEAD_SIGMA = 0.07              # ile cel obejmuje świecąca głowa
-CORE_THRESH = 0.55             # od jakiej jasności cela rozgrzewa się do bieli
-BAR_ALPHA = 0.12               # krycie ciemnego pasa (wariant B — delikatny ślad)
-CELL_ALPHA = 0.18              # krycie obudów diod (bez obrysów)
-OP_EPS = 0.003                 # dirty-check: mniejszych zmian krycia nie wysyłamy
-SWEEP_HALF = 0.44              # połowa szerokości przejazdu (0.5 = do krawędzi)
-SPEED_IDLE = 0.18              # wolny przejazd w idle (myśli = szybszy)
-SPEED_THINK = 0.52             # wolniejszy przejazd
-EASE_TAU = 0.22                # wygładzenie dochodzenia do celu (przyspieszanie)
-TAIL_TAU = 0.10                # ogon w idle (krótszy, szybciej znika)
-TAIL_TAU_THINK = 0.17          # ogon w think (dłuższy — szybszy przejazd, czytelniejszy ślad)
-SPEAK_TAU = 0.09               # spokojniejszy modulator (mniej migotania)
+EASE_TAU = 0.22                # wygładzenie wygaszania/budzenia (krycie kontenera)
 LEVEL_TAU = 0.07               # wygładzanie głośności w czasie (anty-migotanie)
-SPEAK_BASE = 0.03              # min. rozstaw modulatora (cisza)
-SPEAK_GAIN = 0.34              # rozszerzanie z głośnością
-SPEAK_EDGE = 0.06              # miękkość krawędzi rozbłysku
 LOG = os.path.expanduser("~/.claude/simple-tts-overlay.log")
 LOCK_PATH = os.path.expanduser("~/.claude/simple-tts-overlay.lock")
 SPEAK_STATE_PATH = os.path.expanduser("~/.claude/simple-tts-speak.json")
 
 _CS = CGColorSpaceCreateDeviceRGB()
 _lock_handle = None
-_MIDY = H / 2.0
-_POS = [i / (N_LED - 1) for i in range(N_LED)]
-_XS = [EDGE + p * (W - 2 * EDGE) for p in _POS]
-# geometria celi (pt)
-_SPACING = (W - 2 * EDGE) / (N_LED - 1)
-CELL_W = _SPACING * 0.90
-CELL_H = H * 0.72
-GLOW_D = _SPACING * 0.86
 
 
 def _log(msg):
@@ -144,15 +112,6 @@ def _single_instance():
         return False
 
 
-def _clamp(x, lo=0.0, hi=1.0):
-    return lo if x < lo else hi if x > hi else x
-
-
-def _tri(phase):
-    ph = phase % 1.0
-    return 1.0 - 4.0 * abs(ph - 0.5)          # -1 .. +1 .. -1
-
-
 def _cg(pil):
     w, h = pil.size
     raw = pil.tobytes()
@@ -163,23 +122,11 @@ def _cg(pil):
     return cg, raw
 
 
-def _sprites():
-    """CGImage poświaty, gorącej celi i statycznej listwy (+ bajty do utrzymania)."""
-    glow, r1 = _cg(KF.dot_sprite(int(GLOW_D * SCALE), boost=1.5))
-    hot, r2 = _cg(KF.hot_cell_sprite(int(CELL_W * SCALE), int(CELL_H * SCALE)))
-    backing, r3 = _cg(KF.backing_sprite(
-        W * SCALE, H * SCALE, [x * SCALE for x in _XS],
-        CELL_W * SCALE, CELL_H * SCALE,
-        bar_alpha=BAR_ALPHA, cell_alpha=CELL_ALPHA))
-    return {"glow": glow, "hot": hot, "backing": backing}, [r1, r2, r3]
-
-
 def _read_envelope():
     """Obwiednia mowy, którą edge_speak zapisuje tuż przed afplay. Odrzucamy
-    NIEŚWIEŻĄ (już wybrzmiałą albo z przyszłości) — inaczej overlay trzymałby
-    zamrożony modulator na starym pliku (np. sprzed godzin) zamiast pokazać
-    animację mowy. None => caller użyje syntetycznego modulatora (pulsowanie),
-    więc mowa i tak „gada", nawet gdy dźwięk poleciał fallbackiem say."""
+    NIEŚWIEŻĄ (już wybrzmiałą albo z przyszłości) — inaczej nakładka trzymałaby
+    zamrożony modulator na starym pliku zamiast pokazać animację mowy.
+    None => caller użyje syntetycznego modulatora (pulsowanie)."""
     try:
         with open(SPEAK_STATE_PATH) as f:
             d = json.load(f)
@@ -189,22 +136,12 @@ def _read_envelope():
     if not env:
         return None
     age = time.time() - start
-    if age < -0.5 or age > len(env) * dt + 0.5:   # z przyszłości albo już wybrzmiała
+    if age < -0.5 or age > len(env) * dt + 0.5:   # z przyszłości albo wybrzmiała
         return None
     return (env, dt, start)
 
 
-def _mk_layer(contents, w, h, x, y=_MIDY):
-    lyr = CALayer.layer()
-    lyr.setBounds_(((0.0, 0.0), (w, h)))
-    lyr.setPosition_((x, y))
-    lyr.setContentsGravity_("resize")
-    lyr.setContentsScale_(SCALE)
-    lyr.setContents_(contents)
-    return lyr
-
-
-class KittPanel(NSPanel):
+class OverlayPanel(NSPanel):
     # macOS domyślnie przycina okno tak, by jego górna krawędź nie weszła nad
     # pasek menu (constrainFrameRect:toScreen:). Zwracamy rect bez zmian, żeby
     # nakładka mogła usiąść NA pasku menu, na samej górze ekranu.
@@ -212,8 +149,9 @@ class KittPanel(NSPanel):
         return frameRect
 
 
-def make_panel(spr):
-    panel = KittPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+def make_panel():
+    """Pusty panel nakładki (warstwy dokłada _populate_container)."""
+    panel = OverlayPanel.alloc().initWithContentRect_styleMask_backing_defer_(
         NSMakeRect(0, 0, W, H), NSWindowStyleMaskNonactivatingPanel,
         NSBackingStoreBuffered, False)
     panel.setLevel_(NSScreenSaverWindowLevel)
@@ -232,23 +170,12 @@ def make_panel(spr):
     view.setWantsLayer_(True)
     container = CALayer.layer()
     container.setFrame_(NSMakeRect(0, 0, W, H))
+    container.setMasksToBounds_(True)     # przewijane motywy (ekg/matrix) tną się na listwie
     container.setOpacity_(0.0)
-    # statyka: ciemny pas + obudowy — jeden obraz, jedna warstwa, zero zmian
-    container.addSublayer_(_mk_layer(spr["backing"], W, H, W / 2.0))
-    glows, cores = [], []
-    for x in _XS:                                   # poświata -> gorąca cela
-        g = _mk_layer(spr["glow"], GLOW_D, GLOW_D, x)
-        g.setOpacity_(FLOOR)
-        container.addSublayer_(g)
-        glows.append(g)
-        c = _mk_layer(spr["hot"], CELL_W, CELL_H, x)
-        c.setOpacity_(0.0)
-        container.addSublayer_(c)
-        cores.append(c)
     view.layer().addSublayer_(container)
     panel.setContentView_(view)
     panel.orderFrontRegardless()
-    return panel, container, glows, cores
+    return panel, container
 
 
 def top_center(sf):
@@ -258,25 +185,54 @@ def top_center(sf):
 
 
 class Controller(NSObject):
+    # --- motyw ----------------------------------------------------------------
+    def buildTheme_(self, name):
+        """Zbuduj motyw + CGImage sprite'ów i wstaw jego warstwy do paneli."""
+        theme = get_theme(name, W, H, SCALE)
+        cgs, raws = {}, []
+        for key, pil in theme.sprites().items():
+            cg, raw = _cg(pil)
+            cgs[key] = cg
+            raws.append(raw)
+        self.theme, self.theme_name = theme, name
+        self.cgs, self._raw = cgs, raws
+        self.specs = theme.layers()
+        for ent in self.entries:
+            self._populate_container(ent)
+        theme.invalidate()
+
+    def _populate_container(self, ent):
+        container = ent["container"]
+        container.setSublayers_(None)
+        layers = []
+        for spec in self.specs:
+            lyr = CALayer.layer()
+            lyr.setBounds_(((0.0, 0.0), (spec["w"], spec["h"])))
+            lyr.setPosition_((spec["x"], spec["y"]))
+            lyr.setContentsGravity_("resize")
+            lyr.setContentsScale_(SCALE)
+            lyr.setContents_(self.cgs[spec["img"]])
+            lyr.setOpacity_(spec["op"])
+            container.addSublayer_(lyr)
+            layers.append(lyr)
+        ent["layers"] = layers
+
+    # --- stany -----------------------------------------------------------------
     def enterMode_(self, mode):
         self.speak = None
         if mode == "idle":
-            self.idle_entered = time.monotonic()   # świeży start 3-minutowego licznika
+            self.idle_entered = time.monotonic()   # świeży start licznika uśpienia
         if mode is None:
             self.vis_t = 0.0
             return
         self.vis_t = 1.0
-        if mode == "think":
-            self.amp_t, self.speed_t, self.bloom_t = 1.0, SPEED_THINK, 0.0
-        elif mode == "speak":
-            self.amp_t, self.speed_t, self.bloom_t = 0.0, SPEED_IDLE, 1.0
+        if mode == "speak":
             self.speak = _read_envelope()
-        else:                                     # idle — wolny przejazd
-            self.amp_t, self.speed_t, self.bloom_t = 1.0, SPEED_IDLE, 0.0
+        self.theme.enter_mode(mode, self.snap)
 
-    # --- timery: szybki render <-> wolny poll po wygaszeniu -----------------
+    # --- timery: szybki render <-> wolny poll po wygaszeniu ---------------------
     def startFast(self):
-        fps = FPS_SPEAK if self.mode == "speak" else FPS_SWEEP
+        fps = self.theme.fps(self.mode) if self.mode else 21
         if self.fast_timer is not None and self.fast_fps == fps:
             return
         if self.slow_timer is not None:
@@ -308,9 +264,7 @@ class Controller(NSObject):
             ent["container"].setOpacity_(0.0)
             ent["panel"].orderOut_(None)
         self.applied_vis = 0.0
-        self.led = [0.0] * N_LED
-        self.applied_glow = [None] * N_LED        # wymuś pełny zapis po wybudzeniu
-        self.applied_core = [None] * N_LED
+        self.theme.invalidate()               # po wybudzeniu pełny zapis warstw
 
     def poll_(self, timer):
         """Wygaszona nakładka: tylko sprawdzanie stanu, zero renderu.
@@ -319,11 +273,12 @@ class Controller(NSObject):
         (self.sleep_mode) — dla wygaszenia po bezczynności to wciąż "idle"
         dopóki Claude nie zmieni stanu (a nie po prostu upływ czasu)."""
         try:
-            m = KS.current_mode()
-            if m == self.sleep_mode:
+            snap = KS.snapshot()
+            if snap["mode"] == self.sleep_mode:
                 return
-            self.mode = m
-            self.enterMode_(m)
+            self.snap = snap
+            self.mode = snap["mode"]
+            self.enterMode_(self.mode)
             self.lastcheck = time.monotonic()
             self.reposition_(True)
             for ent in self.entries:
@@ -354,12 +309,19 @@ class Controller(NSObject):
 
             if now - self.lastcheck >= MODE_CHECK_SEC:
                 self.lastcheck = now
-                m = KS.current_mode()
-                if m != self.mode:
-                    self.mode = m
-                    self.enterMode_(m)
-                    self.startFast()          # speak = 28 fps, reszta 21
-                elif m == "speak" and self.speak is None:
+                name = KS.theme_name()
+                if name != self.theme_name:
+                    _log(f"motyw: {self.theme_name} -> {name}")
+                    self.buildTheme_(name)
+                    self.theme.enter_mode(self.mode or "idle", self.snap)
+                    self.startFast()          # nowy motyw może mieć inne fps
+                snap = KS.snapshot()
+                self.snap = snap
+                if snap["mode"] != self.mode:
+                    self.mode = snap["mode"]
+                    self.enterMode_(self.mode)
+                    self.startFast()          # fps zależne od motywu i trybu
+                elif self.mode == "speak" and self.speak is None:
                     # obwiednia mogła się zapisać chwilę PO wejściu w speak
                     # (albo dogania fallback) — dociągnij ją, gdy się pojawi
                     self.speak = _read_envelope()
@@ -369,17 +331,12 @@ class Controller(NSObject):
                 self.vis_t = 0.0
 
             k = 1.0 - math.exp(-dt / EASE_TAU)
-            self.amp += (self.amp_t - self.amp) * k
-            self.speed += (self.speed_t - self.speed) * k
             self.vis += (self.vis_t - self.vis) * k
             if abs(self.vis - self.vis_t) < 0.004:
                 self.vis = self.vis_t
-            self.bloom += (self.bloom_t - self.bloom) * k
-            self.phase += self.speed * dt
-            hx = 0.5 + self.amp * SWEEP_HALF * _tri(self.phase)
 
-            # wyciemnione do zera (KR wyłączony ALBO bezczynność > IDLE_SLEEP_SEC)
-            # -> panele z ekranu, wolny poll; sleep_mode pamięta co uśpiło, żeby
+            # wyciemnione do zera (nakładka wyłączona ALBO bezczynność) ->
+            # panele z ekranu, wolny poll; sleep_mode pamięta co uśpiło, żeby
             # poll_ wiedział, na jaką zmianę czekać (idle -> idle to nie zmiana)
             if self.vis_t == 0.0 and self.vis == 0.0:
                 self.sleep_mode = self.mode
@@ -397,40 +354,10 @@ class Controller(NSObject):
             else:
                 level_t = 0.0
             self.level += (level_t - self.level) * (1.0 - math.exp(-dt / LEVEL_TAU))
-            reach = (SPEAK_BASE + self.level * SPEAK_GAIN) * self.bloom
-            if self.mode == "speak":
-                tail_tau = SPEAK_TAU
-            elif self.mode == "think":
-                tail_tau = TAIL_TAU_THINK
-            else:
-                tail_tau = TAIL_TAU
-            decay = math.exp(-dt / tail_tau)
-            led = self.led
-            for i, p in enumerate(_POS):
-                d = p - hx                          # modulator „rozkwita" wokół głowy
-                head = HEAD_BRIGHT * math.exp(-(d / HEAD_SIGMA) ** 2)
-                flare = _clamp((reach - abs(d)) / SPEAK_EDGE) * HEAD_BRIGHT
-                des = head if head > flare else flare
-                # afterglow: led co najmniej = bieżąca głowa, inaczej gaśnie z
-                # poprzedniej wartości. max() zamiast if — inaczej przy des==led
-                # led skakał des<->des*decay co klatkę (migotanie w spoczynku).
-                led[i] = des if des > led[i] * decay else led[i] * decay
-                if led[i] < 0.001:
-                    led[i] = 0.0
 
-            # dirty-check: wysyłamy tylko realne zmiany; brak zmian = brak transakcji
-            ag, ac = self.applied_glow, self.applied_core
             updates = []
-            for i, v in enumerate(led):
-                go = FLOOR + (1.0 - FLOOR) * _clamp(v)
-                co = _clamp((_clamp(v) - CORE_THRESH) / (1.0 - CORE_THRESH))
-                if ag[i] is None or abs(go - ag[i]) > OP_EPS:
-                    ag[i] = go
-                    updates.append((i, 0, go))
-                if ac[i] is None or abs(co - ac[i]) > OP_EPS \
-                        or (co == 0.0 and ac[i] != 0.0):
-                    ac[i] = co
-                    updates.append((i, 1, co))
+            if self.mode is not None:
+                updates = self.theme.step(dt, now, self.level, self.snap)
             vis_changed = self.vis != self.applied_vis
             if not updates and not vis_changed:
                 return
@@ -440,9 +367,14 @@ class Controller(NSObject):
             for ent in self.entries:
                 if vis_changed:
                     ent["container"].setOpacity_(self.vis)
-                glows, cores = ent["glows"], ent["cores"]
-                for i, which, val in updates:
-                    (glows if which == 0 else cores)[i].setOpacity_(val)
+                layers = ent["layers"]
+                for idx, prop, val in updates:
+                    if prop == "op":
+                        layers[idx].setOpacity_(val)
+                    elif prop == "pos":
+                        layers[idx].setPosition_(val)
+                    else:                     # "img"
+                        layers[idx].setContents_(self.cgs[val])
             CATransaction.commit()
             self.applied_vis = self.vis
         except Exception:
@@ -457,39 +389,35 @@ def main():
     app = NSApplication.sharedApplication()
     app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
 
-    spr, keep = _sprites()
     entries = []
     for s in NSScreen.screens():
-        panel, container, glows, cores = make_panel(spr)
+        panel, container = make_panel()
         origin = top_center(s.frame())
         panel.setFrameOrigin_(origin)
         entries.append({"panel": panel, "container": container,
-                        "glows": glows, "cores": cores, "origin": origin})
-    _log(f"start (celki): {len(entries)} ekran(ów), {N_LED} diod")
+                        "layers": [], "origin": origin})
 
     ctrl = Controller.alloc().init()
     ctrl.entries = entries
-    ctrl._raw = keep
-    ctrl.led = [FLOOR] * N_LED
-    ctrl.applied_glow = [None] * N_LED
-    ctrl.applied_core = [None] * N_LED
-    ctrl.applied_vis = -1.0
+    ctrl.snap = {"mode": "idle", "busy": 0, "age": 0.0}
     ctrl.mode = "__init__"
+    ctrl.theme_name = None
     ctrl.sleep_mode = None
     ctrl.idle_entered = time.monotonic()
     ctrl.speak = None
-    ctrl.amp = ctrl.amp_t = 0.0
-    ctrl.speed = ctrl.speed_t = SPEED_IDLE
     ctrl.vis = ctrl.vis_t = 0.0
-    ctrl.bloom = ctrl.bloom_t = 0.0
+    ctrl.applied_vis = -1.0
     ctrl.level = 0.0
-    ctrl.phase = 0.0
     ctrl.t = time.monotonic()
     ctrl.lastcheck = -1.0
     ctrl.lastscreens = -1.0
     ctrl.fast_timer = None
     ctrl.fast_fps = 0
     ctrl.slow_timer = None
+    ctrl.buildTheme_(KS.theme_name())
+    _log(f"start: {len(entries)} ekran(ów), motyw '{ctrl.theme_name}', "
+         f"{len(ctrl.specs)} warstw")
+    ctrl.mode = None
     ctrl.startFast()
     app.run()
 

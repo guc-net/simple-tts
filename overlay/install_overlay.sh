@@ -30,6 +30,9 @@ echo "Instaluję zależności (PyObjC Cocoa+Quartz + Pillow)…"
 # 3) kopia do stabilnej lokalizacji (przeżywa aktualizacje pluginu)
 mkdir -p "$DEST_DIR"
 cp "$SRC_DIR"/kitt_frame.py "$SRC_DIR"/kitt_state.py "$SRC_DIR"/kitt_overlay.py "$DEST_DIR"/
+rm -rf "$DEST_DIR/themes"
+cp -R "$SRC_DIR"/themes "$DEST_DIR"/themes
+rm -rf "$DEST_DIR/themes/__pycache__"
 echo "Skopiowano do $DEST_DIR"
 
 # 4) LaunchAgent

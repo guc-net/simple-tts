@@ -10,7 +10,12 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
-from tts_utils import load_config, read_hook_input, set_session_busy
+from tts_utils import (
+    load_config,
+    read_hook_input,
+    set_session_attention,
+    set_session_busy,
+)
 
 
 def main():
@@ -18,6 +23,8 @@ def main():
         sys.exit(0)
     session_id = read_hook_input().get("session_id")
     set_session_busy(session_id, True)
+    # nowy prompt = użytkownik wrócił -> sesja nie czeka już na jego uwagę
+    set_session_attention(session_id, False)
     sys.exit(0)
 
 

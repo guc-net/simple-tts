@@ -15,6 +15,7 @@ from tts_utils import (
     extract_tts_from_transcript,
     load_config,
     read_hook_input,
+    set_session_attention,
     set_session_busy,
     speak,
 )
@@ -37,7 +38,9 @@ def main():
 
     # Claude skończył pracę -> ta sesja wychodzi z trybu "think" (chyba że
     # zaraz zacznie mówić: tryb "speak" ma pierwszeństwo w kitt_state).
+    # Zdejmujemy też ewentualny znacznik "attention" — tura się skończyła.
     set_session_busy(input_data.get('session_id'), False)
+    set_session_attention(input_data.get('session_id'), False)
 
     # In "tool" mode the model speaks via the speak MCP tool, so the Stop hook
     # has nothing to do (and must stay silent to avoid double speech).

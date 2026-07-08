@@ -18,6 +18,7 @@ STATE_PATH = os.path.expanduser("~/.claude/simple-tts-state.json")
 # "Sesja pracuje" dla nakładki KITT: jeden plik-znacznik na sesję (touch od
 # UserPromptSubmit, rm od Stop). Katalog, bo Claude może chodzić w kilku sesjach.
 BUSY_DIR = os.path.expanduser("~/.claude/simple-tts-busy.d")
+ATTENTION_DIR = os.path.expanduser("~/.claude/simple-tts-attention.d")
 USER_PHONETICS_PATH = os.path.expanduser("~/.claude/simple-tts-phonetics.json")
 PHONETICS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "phonetics")
 EDGE_SPEAK_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "edge_speak.py")
@@ -45,6 +46,9 @@ DEFAULT_CONFIG = {
     # scanner overlay animation (idle / thinking / speaking). One switch for
     # both. Default on. When off: plain voice, no bed, no overlay.
     "knight_rider": True,
+    # Overlay animation theme: kitt | cylon | hal | ekg | matrix | lava.
+    # Unknown values fall back to "kitt". Switchable live (/tts theme <name>).
+    "overlay_theme": "kitt",
 }
 
 # Map of language names (as stored by the setup skill) to phonetic dict codes
@@ -286,27 +290,42 @@ def _is_our_tts(pid):
         return False
 
 
-def _busy_marker(session_id):
+def _session_marker(dir_path, session_id):
     safe = "".join(c for c in str(session_id or "default")
                    if c.isalnum() or c in "-_.") or "default"
-    return os.path.join(BUSY_DIR, safe)
+    return os.path.join(dir_path, safe)
 
 
-def set_session_busy(session_id, busy):
-    """Ustaw/zdejmij znacznik 'ta sesja pracuje' (tryb 'think' nakładki).
-    UserPromptSubmit -> busy=True, Stop -> busy=False. Ciche przy błędzie."""
+def _busy_marker(session_id):
+    return _session_marker(BUSY_DIR, session_id)
+
+
+def _set_session_marker(dir_path, session_id, on):
+    """Postaw/zdejmij plikowy znacznik per-sesja dla nakładki. Ciche przy błędzie."""
     try:
-        if busy:
-            os.makedirs(BUSY_DIR, exist_ok=True)
-            with open(_busy_marker(session_id), "w") as f:
+        if on:
+            os.makedirs(dir_path, exist_ok=True)
+            with open(_session_marker(dir_path, session_id), "w") as f:
                 f.write(str(int(time.time())))
         else:
             try:
-                os.remove(_busy_marker(session_id))
+                os.remove(_session_marker(dir_path, session_id))
             except FileNotFoundError:
                 pass
     except OSError:
         pass
+
+
+def set_session_busy(session_id, busy):
+    """Ustaw/zdejmij znacznik 'ta sesja pracuje' (tryb 'think' nakładki).
+    UserPromptSubmit -> busy=True, Stop -> busy=False."""
+    _set_session_marker(BUSY_DIR, session_id, busy)
+
+
+def set_session_attention(session_id, on):
+    """Ustaw/zdejmij znacznik 'ta sesja czeka na użytkownika' (tryb 'attention').
+    Notification -> on=True; UserPromptSubmit / PostToolUse / Stop -> on=False."""
+    _set_session_marker(ATTENTION_DIR, session_id, on)
 
 
 def speak(text, priority=False, force=False):

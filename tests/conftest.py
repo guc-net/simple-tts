@@ -19,6 +19,7 @@ def isolated_paths(tmp_path, monkeypatch):
     monkeypatch.setattr(tts_utils, "CONFIG_PATH", str(tmp_path / "config.json"))
     monkeypatch.setattr(tts_utils, "STATE_PATH", str(tmp_path / "state.json"))
     monkeypatch.setattr(tts_utils, "BUSY_DIR", str(tmp_path / "busy.d"))
+    monkeypatch.setattr(tts_utils, "ATTENTION_DIR", str(tmp_path / "attention.d"))
     monkeypatch.setattr(tts_utils, "USER_PHONETICS_PATH", str(tmp_path / "phonetics.json"))
     return tmp_path
 

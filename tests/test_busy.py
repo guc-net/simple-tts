@@ -51,3 +51,75 @@ def test_user_prompt_hook_noop_without_config(isolated_paths, monkeypatch):
     with pytest.raises(SystemExit):
         user_prompt.main()
     assert not (isolated_paths / "busy.d").exists()
+
+
+# --- znacznik 'attention' (sesja czeka na zgodę) ------------------------------
+
+def test_set_session_attention_creates_and_removes(isolated_paths):
+    tts_utils.set_session_attention("abc", True)
+    assert (isolated_paths / "attention.d" / "abc").exists()
+    tts_utils.set_session_attention("abc", False)
+    assert not (isolated_paths / "attention.d" / "abc").exists()
+
+
+def test_notification_hook_sets_attention(write_config, isolated_paths, monkeypatch):
+    write_config()
+    import notification_tts
+    monkeypatch.setattr(notification_tts, "read_hook_input", lambda: {
+        "session_id": "s9",
+        "message": "Claude needs your permission to use Bash"})
+    monkeypatch.setattr(notification_tts, "speak", lambda *a, **k: None)
+    with pytest.raises(SystemExit):
+        notification_tts.main()
+    assert (isolated_paths / "attention.d" / "s9").exists()
+
+
+def test_user_prompt_hook_clears_attention(write_config, isolated_paths, monkeypatch):
+    write_config()
+    tts_utils.set_session_attention("sess1", True)
+    import user_prompt
+    monkeypatch.setattr(user_prompt, "read_hook_input",
+                        lambda: {"session_id": "sess1"})
+    with pytest.raises(SystemExit):
+        user_prompt.main()
+    assert not (isolated_paths / "attention.d" / "sess1").exists()
+    assert (isolated_paths / "busy.d" / "sess1").exists()
+
+
+def test_stop_hook_clears_attention_and_busy(write_config, isolated_paths, monkeypatch):
+    write_config()
+    tts_utils.set_session_busy("sess2", True)
+    tts_utils.set_session_attention("sess2", True)
+    import stop_tts
+    monkeypatch.setattr(stop_tts, "read_hook_input",
+                        lambda: {"session_id": "sess2", "last_assistant_message": ""})
+    monkeypatch.setattr(stop_tts, "speak", lambda *a, **k: None)
+    with pytest.raises(SystemExit):
+        stop_tts.main()
+    assert not (isolated_paths / "attention.d" / "sess2").exists()
+    assert not (isolated_paths / "busy.d" / "sess2").exists()
+
+
+def test_post_tool_use_hook_clears_attention(write_config, isolated_paths, monkeypatch):
+    """Zgoda udzielona -> narzędzie się wykonało -> PostToolUse zdejmuje znacznik."""
+    write_config()
+    tts_utils.set_session_attention("sess3", True)
+    import attention_clear
+    monkeypatch.setattr(attention_clear, "read_hook_input",
+                        lambda: {"session_id": "sess3"})
+    with pytest.raises(SystemExit):
+        attention_clear.main()
+    assert not (isolated_paths / "attention.d" / "sess3").exists()
+
+
+def test_post_tool_use_hook_fast_path_skips_stdin(isolated_paths, monkeypatch):
+    """Brak znaczników -> hook wychodzi bez czytania stdin (zero kosztu na
+    każdym wywołaniu narzędzia)."""
+    import attention_clear
+
+    def _boom():
+        raise AssertionError("stdin nie powinien być czytany")
+
+    monkeypatch.setattr(attention_clear, "read_hook_input", _boom)
+    with pytest.raises(SystemExit):
+        attention_clear.main()

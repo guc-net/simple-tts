@@ -18,6 +18,7 @@ def paths(tmp_path, monkeypatch):
     monkeypatch.setattr(KS, "CONFIG_PATH", str(tmp_path / "config.json"))
     monkeypatch.setattr(KS, "STATE_PATH", str(tmp_path / "state.json"))
     monkeypatch.setattr(KS, "BUSY_DIR", str(tmp_path / "busy.d"))
+    monkeypatch.setattr(KS, "ATTENTION_DIR", str(tmp_path / "attention.d"))
     # domyślnie: cisza (brak procesów audio)
     monkeypatch.setattr(KS, "_running_process_names", lambda: set())
     return tmp_path
@@ -29,10 +30,24 @@ def _config(paths, **overrides):
     (paths / "config.json").write_text(json.dumps(cfg))
 
 
-def _busy(paths, name="s1"):
-    d = paths / "busy.d"
+def _marker(paths, dirname, name="s1", age=0.0):
+    import time
+    d = paths / dirname
     d.mkdir(exist_ok=True)
-    (d / name).write_text("123")
+    f = d / name
+    f.write_text("123")
+    if age:
+        t = time.time() - age
+        os.utime(f, (t, t))
+    return f
+
+
+def _busy(paths, name="s1", age=0.0):
+    return _marker(paths, "busy.d", name, age)
+
+
+def _attention(paths, name="s1", age=0.0):
+    return _marker(paths, "attention.d", name, age)
 
 
 def _audio(monkeypatch, on=True):
@@ -104,3 +119,85 @@ def test_tts_active_gate_true_when_pid_alive(paths, monkeypatch):
     (paths / "state.json").write_text(json.dumps({"pid": 4242, "ts": 0}))
     monkeypatch.setattr(KS.os, "kill", lambda pid, sig: None)
     assert KS._tts_active() is True
+
+
+# --- tryb attention (sesja czeka na zgodę użytkownika) ----------------------
+
+def test_attention_mode_when_marker_fresh(paths):
+    _config(paths)
+    _attention(paths)
+    assert KS.current_mode() == "attention"
+
+
+def test_speak_beats_attention(paths, monkeypatch):
+    _config(paths)
+    _attention(paths)
+    _audio(monkeypatch, on=True)
+    assert KS.current_mode() == "speak"
+
+
+def test_attention_beats_think(paths):
+    _config(paths)
+    _busy(paths)
+    _attention(paths)
+    assert KS.current_mode() == "attention"
+
+
+def test_stale_attention_ignored(paths):
+    _config(paths)
+    _attention(paths, age=KS.ATTENTION_STALE_SEC + 60)
+    assert KS.current_mode() == "idle"
+
+
+# --- licznik sesji i wiek pracy ----------------------------------------------
+
+def test_busy_count_counts_fresh_markers_only(paths):
+    _config(paths)
+    _busy(paths, "a")
+    _busy(paths, "b")
+    _busy(paths, "dead", age=KS.BUSY_STALE_SEC + 60)
+    assert KS.busy_count() == 2
+
+
+def test_busy_count_zero_without_dir(paths):
+    assert KS.busy_count() == 0
+
+
+def test_busy_age_is_oldest_fresh_marker(paths):
+    _config(paths)
+    _busy(paths, "young", age=10)
+    _busy(paths, "old", age=120)
+    age = KS.busy_age()
+    assert 115 <= age <= 130
+
+
+def test_busy_age_zero_when_idle(paths):
+    _config(paths)
+    assert KS.busy_age() == 0.0
+
+
+def test_snapshot_shape(paths):
+    _config(paths)
+    _busy(paths, "a")
+    _busy(paths, "b")
+    snap = KS.snapshot()
+    assert snap["mode"] == "think"
+    assert snap["busy"] == 2
+    assert snap["age"] >= 0.0
+
+
+def test_snapshot_mode_none_when_disabled(paths):
+    _config(paths, knight_rider=False)
+    assert KS.snapshot()["mode"] is None
+
+
+# --- wybór motywu z configu ---------------------------------------------------
+
+def test_theme_name_default_kitt(paths):
+    _config(paths)
+    assert KS.theme_name() == "kitt"
+
+
+def test_theme_name_from_config_normalized(paths):
+    _config(paths, overlay_theme=" HAL ")
+    assert KS.theme_name() == "hal"
