@@ -46,7 +46,7 @@ DEFAULT_CONFIG = {
     # scanner overlay animation (idle / thinking / speaking). One switch for
     # both. Default on. When off: plain voice, no bed, no overlay.
     "knight_rider": True,
-    # Overlay animation theme: kitt | cylon | hal | ekg | matrix | lava.
+    # Overlay animation theme: kitt | cylon | hal | ekg | matrix | spark.
     # Unknown values fall back to "kitt". Switchable live (/tts theme <name>).
     "overlay_theme": "kitt",
 }

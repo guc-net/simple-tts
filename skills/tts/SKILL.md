@@ -1,5 +1,5 @@
 ---
-description: "Mute or unmute simple-tts speech, toggle Knight Rider mode (KITT siren + scanner overlay), pick the overlay theme (kitt/cylon/hal/ekg/matrix/lava), and manage the audio cache. Usage: /simple-tts:tts on|off|status|knight-rider [on|off]|theme [name]|cache [stats|prune|clear]."
+description: "Mute or unmute simple-tts speech, toggle Knight Rider mode (KITT siren + scanner overlay), pick the overlay theme (kitt/cylon/hal/ekg/matrix/spark), and manage the audio cache. Usage: /simple-tts:tts on|off|status|knight-rider [on|off]|theme [name]|cache [stats|prune|clear]."
 user_invocable: true
 ---
 
@@ -57,14 +57,14 @@ Pass the user's `on`/`off` as the argument. Confirm the resulting state (e.g. "T
 Pick the **overlay animation theme** — the `overlay_theme` config key. Available
 themes: `kitt` (Knight Rider scanner, default), `cylon` (Battlestar Galactica eye),
 `hal` (HAL 9000 red eye), `ekg` (heart monitor trace), `matrix` (digital rain),
-`lava` (plasma). The running overlay picks the change up live (within a second),
+`spark` (cat-eye lens with a spark stream). The running overlay picks the change up live (within a second),
 no restart needed. No argument reports the current theme and lists the options.
 
 ```bash
 python3 -c "
 import json, os, sys
 p = os.path.expanduser('~/.claude/simple-tts-config.json')
-themes = ('kitt', 'cylon', 'hal', 'ekg', 'matrix', 'lava')
+themes = ('kitt', 'cylon', 'hal', 'ekg', 'matrix', 'spark')
 with open(p) as f: c = json.load(f)
 arg = (sys.argv[1] if len(sys.argv) > 1 else '').strip().lower()
 if arg:

@@ -8,8 +8,8 @@ w configu). Nazwy motywów: klucz `overlay_theme` w simple-tts-config.json.
 from .ekg import EkgTheme
 from .hal import HalTheme
 from .kitt import CylonTheme, KittTheme
-from .lava import LavaTheme
 from .matrix import MatrixTheme
+from .spark import SparkTheme
 
 _REGISTRY = {
     "kitt": KittTheme,
@@ -17,7 +17,7 @@ _REGISTRY = {
     "hal": HalTheme,
     "ekg": EkgTheme,
     "matrix": MatrixTheme,
-    "lava": LavaTheme,
+    "spark": SparkTheme,
 }
 
 THEME_NAMES = tuple(sorted(_REGISTRY))

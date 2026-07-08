@@ -5,7 +5,7 @@ Host odpowiada za wszystko, co wspólne: panele per ekran, timery (szybki
 render <-> wolny poll po wygaszeniu), odczyt stanu (kitt_state.snapshot),
 obwiednię mowy, płynne wygaszanie/budzenie i aplikowanie aktualizacji na
 CALayer-ach. SAM WYGLĄD (sprite'y, warstwy, ruch) dostarcza motyw z themes/
-(klucz `overlay_theme` w configu: kitt | cylon | hal | ekg | matrix | lava);
+(klucz `overlay_theme` w configu: kitt | cylon | hal | ekg | matrix | spark);
 motyw można przełączać na żywo — host przebudowuje warstwy bez restartu.
 
 Stany (kitt_state):

@@ -147,24 +147,24 @@ def test_matrix_recolors_column_by_column():
     assert amber == 2 * t.n_cols, "po paru sekundach cały deszcz jest bursztynowy"
 
 
-# --- lava: paleta krosfejdem na dwóch warstwach -------------------------------
+# --- spark: soczewka krosfejdem między dwiema warstwami -----------------------
 
-def test_lava_attention_is_a_crossfade():
-    t = _mk("lava")
+def test_spark_attention_is_a_crossfade():
+    t = _mk("spark")
     now, ops, imgs = _settle(t, "think")
     t.enter_mode("attention", SNAP)
     now, first = _steps(t, "attention", now, 0.0, ops=ops, imgs=imgs)
     for idx, prop, val in first:
-        if prop == "op" and idx == t.i_plasma_amber:
-            assert val < 0.3, "bursztynowa plazma ma wjechać krosfejdem"
+        if prop == "op" and idx == t.i_lens_a:
+            assert val < 0.3, "bursztynowa soczewka ma wjechać krosfejdem"
     now, _ = _steps(t, "attention", now, 2.5, ops=ops, imgs=imgs)
-    assert ops[t.i_plasma_amber] > 0.45
-    assert ops[t.i_plasma_red] < 0.35
+    assert ops[t.i_lens_a] > 0.45
+    assert ops[t.i_lens_g] < 0.35
 
 
 # --- kropki licznika sesji też płyną ------------------------------------------
 
-@pytest.mark.parametrize("name", ["kitt", "cylon", "hal", "ekg", "matrix", "lava"])
+@pytest.mark.parametrize("name", ["kitt", "cylon", "hal", "ekg", "matrix", "spark"])
 def test_pips_fade_in(name):
     t = _mk(name)
     snap0 = {"busy": 0, "age": 0.0}

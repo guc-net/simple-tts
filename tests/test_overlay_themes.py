@@ -44,14 +44,14 @@ def _run(theme, mode, frames=90, level=0.0, snap=SNAP, t0=100.0):
 
 
 def test_registry_has_all_themes():
-    assert set(THEME_NAMES) >= {"kitt", "cylon", "hal", "ekg", "matrix", "lava"}
+    assert set(THEME_NAMES) >= {"kitt", "cylon", "hal", "ekg", "matrix", "spark"}
 
 
 def test_unknown_theme_falls_back_to_kitt():
     assert type(_mk("no-such-theme")) is type(_mk("kitt"))
 
 
-@pytest.mark.parametrize("name", ["kitt", "cylon", "hal", "ekg", "matrix", "lava"])
+@pytest.mark.parametrize("name", ["kitt", "cylon", "hal", "ekg", "matrix", "spark"])
 def test_sprites_are_rgba_images(name):
     from PIL import Image
     spr = _mk(name).sprites()
@@ -61,7 +61,7 @@ def test_sprites_are_rgba_images(name):
         assert img.mode == "RGBA", key
 
 
-@pytest.mark.parametrize("name", ["kitt", "cylon", "hal", "ekg", "matrix", "lava"])
+@pytest.mark.parametrize("name", ["kitt", "cylon", "hal", "ekg", "matrix", "spark"])
 def test_layers_reference_existing_sprites(name):
     t = _mk(name)
     keys = set(t.sprites().keys())
@@ -74,7 +74,7 @@ def test_layers_reference_existing_sprites(name):
         assert spec["w"] > 0 and spec["h"] > 0
 
 
-@pytest.mark.parametrize("name", ["kitt", "cylon", "hal", "ekg", "matrix", "lava"])
+@pytest.mark.parametrize("name", ["kitt", "cylon", "hal", "ekg", "matrix", "spark"])
 @pytest.mark.parametrize("mode", MODES)
 def test_step_updates_are_valid_and_animate(name, mode):
     t = _mk(name)
@@ -93,7 +93,7 @@ def test_step_updates_are_valid_and_animate(name, mode):
             assert len(val) == 2
 
 
-@pytest.mark.parametrize("name", ["kitt", "cylon", "hal", "ekg", "matrix", "lava"])
+@pytest.mark.parametrize("name", ["kitt", "cylon", "hal", "ekg", "matrix", "spark"])
 def test_invalidate_forces_full_reemit(name):
     t = _mk(name)
     _run(t, "idle", frames=30)
@@ -102,14 +102,14 @@ def test_invalidate_forces_full_reemit(name):
     assert ups, "po invalidate() pierwsza klatka musi zapisać stan warstw"
 
 
-@pytest.mark.parametrize("name", ["kitt", "cylon", "hal", "ekg", "matrix", "lava"])
+@pytest.mark.parametrize("name", ["kitt", "cylon", "hal", "ekg", "matrix", "spark"])
 def test_fps_sane_for_every_mode(name):
     t = _mk(name)
     for mode in MODES:
         assert 5 <= t.fps(mode) <= 60
 
 
-@pytest.mark.parametrize("name", ["kitt", "cylon", "hal", "ekg", "matrix", "lava"])
+@pytest.mark.parametrize("name", ["kitt", "cylon", "hal", "ekg", "matrix", "spark"])
 def test_fleet_pips_show_busy_count(name):
     """think z busy=3 -> dokładnie 3 kropki licznika zapalone (po tym, jak
     zdążą płynnie wjechać)."""
@@ -129,7 +129,7 @@ def test_fleet_pips_show_busy_count(name):
     assert len(lit) == 3 and len(dark) == 2
 
 
-@pytest.mark.parametrize("name", ["kitt", "cylon", "hal", "ekg", "matrix", "lava"])
+@pytest.mark.parametrize("name", ["kitt", "cylon", "hal", "ekg", "matrix", "spark"])
 def test_fleet_pips_hidden_in_idle(name):
     t = _mk(name)
     snap = {"busy": 0, "age": 0.0}
