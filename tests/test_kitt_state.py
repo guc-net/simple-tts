@@ -198,9 +198,9 @@ def test_snapshot_mode_none_when_disabled(paths):
 
 # --- wybór motywu z configu ---------------------------------------------------
 
-def test_theme_name_default_kitt(paths):
+def test_theme_name_default_spark(paths):
     _config(paths)
-    assert KS.theme_name() == "kitt"
+    assert KS.theme_name() == "spark"
 
 
 def test_theme_name_from_config_normalized(paths):

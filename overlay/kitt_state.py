@@ -38,7 +38,7 @@ ATTENTION_DIR = os.path.expanduser("~/.claude/simple-tts-attention.d")
 ATTENTION_STALE_SEC = 1800    # czekanie bywa długie, ale osierocone znaczniki
                               # nie mogą migać w nieskończoność -> 30 min
 AUDIO_PROCS = ("afplay", "say")
-DEFAULT_THEME = "kitt"
+DEFAULT_THEME = "spark"
 
 
 def _read_json(path):

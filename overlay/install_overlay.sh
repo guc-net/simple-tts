@@ -58,4 +58,4 @@ PLISTEOF
 launchctl unload "$PLIST" 2>/dev/null || true
 launchctl load "$PLIST"
 echo "LaunchAgent załadowany ($LABEL). Nakładka wstanie teraz i po każdym logowaniu."
-echo "Wyłączenie animacji: /simple-tts:tts knight-rider off  (albo w configu knight_rider=false)."
+echo "Zmiana/wyłączenie motywu: /simple-tts:tts theme spark|kitt|cylon|off  (albo w configu overlay_theme / knight_rider=false)."

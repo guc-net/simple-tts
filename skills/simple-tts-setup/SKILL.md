@@ -87,9 +87,11 @@ Present ALL questions at once:
 > 3. **Engine** [**edge**]: _edge = Microsoft online neural voices (best quality, needs internet + `uvx`); say = local macOS voice only (offline). edge automatically falls back to your chosen `say` voice when offline._
 > 4. **Speed** [**220**]: _words per minute for the local voice (200=normal, 220=slightly faster, 300=fast)_
 > 5. **Your name** [**skip**]: _optional — Claude will sometimes greet you by name (~30% of messages)_
-> 6. **Fallback message** [**skip**]: _optional — short phrase spoken when a response has no TTS tag (e.g. "Done"); default is silence_
-> 7. **Quiet hours** [**skip**]: _optional — time window when speech is silenced, e.g. 22:00-07:00_
-> 8. **Preview?** [**no**]: _say "yes" to hear a sample with your chosen settings_
+> 6. **Overlay theme** [**spark**]: _floating status animation at the top of the screen — spark (green cat-eye lens), kitt (red Knight Rider scanner), cylon (red eye), or off (no overlay)_
+> 7. **Voice character** [**auto**]: _auto = follows the theme (spark → plain voice, kitt → siren + distortion, cylon → distortion only); kitt = force siren + distortion; plain = force neither_
+> 8. **Fallback message** [**skip**]: _optional — short phrase spoken when a response has no TTS tag (e.g. "Done"); default is silence_
+> 9. **Quiet hours** [**skip**]: _optional — time window when speech is silenced, e.g. 22:00-07:00_
+> 10. **Preview?** [**no**]: _say "yes" to hear a sample with your chosen settings_
 
 The **edge** engine picks its neural voice automatically from the chosen local voice's gender (e.g. a male voice like Krzysztof → `pl-PL-MarekNeural`, a female voice like Ewa → `pl-PL-ZofiaNeural`). The local voice you select stays as the offline fallback. Note: with edge, the short spoken summaries are sent to Microsoft's TTS servers for synthesis.
 
@@ -123,29 +125,42 @@ Write `~/.claude/simple-tts-config.json`:
   "language": "<chosen language, e.g. Polish>",
   "name": "<name or empty string>",
   "name_chance": 0.3,
-  "engine": "<edge or say, default edge>"
+  "engine": "<edge or say, default edge>",
+  "overlay_theme": "<spark|kitt|cylon, default spark>"
 }
 ```
+
+Map the **Overlay theme** answer:
+- `spark` / `kitt` / `cylon` → set `"overlay_theme"` to it (and `"knight_rider": true`, or just omit the key — missing = on)
+- `off` → set `"knight_rider": false` (overlay hidden; `overlay_theme` can stay at the default)
+
+Map the **Voice character** answer:
+- `auto` → omit both keys (they default to `"auto"` and follow the theme)
+- `kitt` → `"voice_howl": "on"`, `"voice_distortion": "on"`
+- `plain` → `"voice_howl": "off"`, `"voice_distortion": "off"`
 
 Optional keys (add only if the user chose them):
 - `"edge_rate"`: edge-tts speed as a percent offset from normal, e.g. `"+10%"` or `"-10%"` (default `"+0%"`); only affects the edge engine
 - `"fallback_message"`: phrase spoken when a response has no TTS tag
 - `"quiet_hours"`: `{"start": "22:00", "end": "07:00"}` — no speech inside this window (may wrap past midnight)
 - `"enabled"`: `false` mutes all speech without uninstalling (toggled by `/tts on|off`; missing = enabled)
-- `"knight_rider"`: `false` turns off Knight Rider mode — the KITT siren bed under the voice **and** the scanner overlay (toggled by `/tts knight-rider on|off`; missing = on)
+- `"knight_rider"`: `false` hides the overlay entirely (toggled by picking a theme / `/tts theme off`; missing = on)
+- `"voice_howl"` / `"voice_distortion"`: `"auto"|"on"|"off"` — the siren bed and the −20 Hz pitch under the voice (default `"auto"`, follows the theme; toggled by `/tts howl` / `/tts distortion`)
 - `"debug"`: `true` to log notification payloads to `~/.claude/simple-tts-notification-debug.log` (auto-trimmed to 200 lines)
 
 That's all — hooks are auto-registered by the plugin, and the TTS instruction is injected into each session by the SessionStart hook based on this config (language, voice gender for grammar forms, name).
 
-## Step 6b: Knight Rider scanner overlay (optional, macOS)
+## Step 6b: Status overlay (optional, macOS)
 
-Offer the floating **KITT scanner overlay** — a red Larson scanner at the top of
-the screen that idles, switches to a thinking animation while Claude works, and to
-a voice modulator while the TTS voice is actually speaking. It floats over
-fullscreen terminals. It is a separate GUI daemon (deps: pyobjc + Pillow), so it
-does not affect the stdlib-only hooks.
+Offer the floating **status overlay** — a thin animation at the top of the screen
+that idles, switches to a thinking animation while Claude works, and to a voice
+modulator while the TTS voice is actually speaking. It floats over fullscreen
+terminals. The look follows the **Overlay theme** chosen above (default `spark` —
+a green cat-eye lens; `kitt`/`cylon` are the red-scanner variants). It is a
+separate GUI daemon (deps: pyobjc + Pillow), so it does not affect the
+stdlib-only hooks. Skip this if the user chose overlay theme `off`.
 
-> Install the Knight Rider scanner overlay? (a red KITT scanner floats at the top of your screen and reacts while I think/speak)
+> Install the status overlay? (a small animation floats at the top of your screen and reacts while I think/speak — themed spark/kitt/cylon)
 
 If yes, run the installer from the plugin dir (resolves the plugin path whether run
 from the repo or the marketplace cache), passing an optional python with pip:
@@ -158,9 +173,8 @@ bash "$DIR/install_overlay.sh"
 ```
 
 It installs deps, copies the overlay to `~/.claude/simple-tts-overlay/`, and loads a
-LaunchAgent so it autostarts on login. Toggle it any time with `/tts knight-rider
-on|off` (which also controls the siren bed). To remove just the overlay:
-`bash "$DIR/uninstall_overlay.sh"`.
+LaunchAgent so it autostarts on login. Switch or hide it any time with `/tts theme
+<spark|kitt|cylon|off>`. To remove just the overlay: `bash "$DIR/uninstall_overlay.sh"`.
 
 ## Step 7: Test and done
 

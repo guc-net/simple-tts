@@ -1,151 +1,112 @@
 ---
-description: "Mute or unmute simple-tts speech, toggle the scanner overlay, the voice howl (siren) and distortion, pick the overlay theme (kitt/cylon/spark), and manage the audio cache. Usage: /simple-tts:tts on|off|status|knight-rider [on|off]|howl [on|off|auto]|distortion [on|off|auto]|theme [name]|cache [stats|prune|clear]."
+description: "Mute or unmute simple-tts speech, pick the overlay theme (spark/kitt/cylon) or turn the overlay off, tune the voice howl (siren) and distortion, and manage the audio cache. Usage: /simple-tts:tts on|off|status|theme [name|off]|howl [on|off|auto]|distortion [on|off|auto]|cache [stats|prune|clear]."
 user_invocable: true
 ---
 
-# TTS on/off
+# TTS control
 
-Plugin skills are namespaced, so this is invoked as **`/simple-tts:tts`** (e.g. `/simple-tts:tts cache stats`). A bare `/tts` is only possible via a personal `~/.claude/commands/tts.md` wrapper.
+Plugin skills are namespaced, so this is invoked as **`/simple-tts:tts`** (e.g. `/simple-tts:tts theme spark`). A bare `/tts` is only possible via a personal `~/.claude/commands/tts.md` wrapper.
 
-Toggle simple-tts speech via the `enabled` flag in `~/.claude/simple-tts-config.json`. The hooks stay registered; `"enabled": false` just makes them silent. No argument or anything other than `on`/`off`/`cache` means **status**.
+If `~/.claude/simple-tts-config.json` does not exist, stop and tell the user to run `/simple-tts-setup` first — every subcommand below (except `cache`) writes through `config_cli.py`, which refuses to run unconfigured.
 
-If `~/.claude/simple-tts-config.json` does not exist, stop and tell the user to run `/simple-tts-setup` first.
+## Shared: resolve the helper CLIs
+
+All config reads/writes go through `hooks/config_cli.py` (`get`/`set`/`show`); the cache goes through `hooks/cache_cli.py`. Resolve the path once (works whether run as an installed plugin or from the repo), then reuse `$CLI`:
+
+```bash
+CLI="$(ls "${CLAUDE_PLUGIN_ROOT:-}/hooks/config_cli.py" 2>/dev/null \
+  || ls ~/.claude/plugins/cache/*/simple-tts/*/hooks/config_cli.py 2>/dev/null | sort -V | tail -1 \
+  || ls "$PWD/hooks/config_cli.py" 2>/dev/null)"
+```
+
+`config_cli.py set` accepts one or more `key value` pairs and writes them atomically; it infers types (`true`/`false` → bool, integers → int, else string) and echoes back what it set.
 
 ## /tts off
 
 ```bash
-python3 -c "
-import json, os
-p = os.path.expanduser('~/.claude/simple-tts-config.json')
-with open(p) as f: c = json.load(f)
-c['enabled'] = False
-with open(p, 'w') as f: json.dump(c, f, indent=2, ensure_ascii=False)
-print('muted')
-"
+python3 "$CLI" set enabled false
 ```
 
 Confirm: "TTS muted. Re-enable with `/tts on`." Do NOT add a TTS tag to this response — the user just asked for silence.
 
 ## /tts on
 
-Same as above with `c['enabled'] = True`. Confirm: "TTS unmuted." You may add a TTS tag again from this response on.
-
-## /tts knight-rider [on|off]   (alias: sound)
-
-Toggle the **scanner overlay** — the `knight_rider` config key. Controls only the
-floating overlay animation (idle scanner / thinking / speaking). `on` sets `true`,
-`off` sets `false`; no argument reports the current value. Default is on. (The voice
-howl and distortion are separate — see `/tts howl` and `/tts distortion`.)
-
 ```bash
-python3 -c "
-import json, os, sys
-p = os.path.expanduser('~/.claude/simple-tts-config.json')
-with open(p) as f: c = json.load(f)
-arg = sys.argv[1] if len(sys.argv) > 1 else ''
-if arg in ('on','off'):
-    c['knight_rider'] = (arg == 'on')
-    with open(p, 'w') as f: json.dump(c, f, indent=2, ensure_ascii=False)
-print('knight_rider =', c.get('knight_rider', True))
-" ${ARG:-}
+python3 "$CLI" set enabled true
 ```
 
-Pass the user's `on`/`off` as the argument. Confirm the resulting state (e.g. "Skaner włączony." / "…wyłączony."). The overlay reacts within a second.
+Confirm: "TTS unmuted." You may add a TTS tag again from this response on.
+
+## /tts theme [name|off]
+
+Controls the floating **overlay** — both which theme it shows (`overlay_theme`) and whether it runs at all (`knight_rider`). Available themes:
+
+- **`spark`** — green cat-eye lens with a spark stream (**default**); splits one lens per working agent, blinks blue when waiting for you
+- **`kitt`** — Knight Rider red scanner; turns into KARR's yellow scanner when waiting
+- **`cylon`** — Battlestar Galactica wide red eye
+
+Behaviour by argument:
+
+- **no argument** → read the current state and present the list. Fetch it, then narrate the options above and mark the current one:
+  ```bash
+  echo "theme: $(python3 "$CLI" get overlay_theme spark) | overlay: $(python3 "$CLI" get knight_rider true)"
+  ```
+  If `overlay` is `false`, say the overlay is currently **off** (turn it on by picking a theme).
+- **`spark` / `kitt` / `cylon`** → set that theme AND enable the overlay in one write:
+  ```bash
+  python3 "$CLI" set overlay_theme <name> knight_rider true
+  ```
+  Confirm in Polish (e.g. "Motyw nakładki: spark — zielone kocie oko."). The running overlay picks the change up live, no restart.
+- **`off` / `none` / `brak`** → hide the overlay entirely (keeps the remembered theme):
+  ```bash
+  python3 "$CLI" set knight_rider false
+  ```
+  Confirm (e.g. "Nakładka wyłączona. Włącz wybierając motyw: `/tts theme spark`.").
+- **anything else** → do not write; reply that the name is unknown and list `spark`, `kitt`, `cylon`, `off`.
+
+The voice howl/distortion follow the theme automatically on `auto` (see below): spark = plain voice, kitt = siren + distortion, cylon = distortion only.
 
 ## /tts howl [on|off|auto]
 
-Toggle the **siren "howl"** (wyjec) mixed under the voice — the `voice_howl` config
-key (needs `ffmpeg`). Values: **`auto`** (default) = howl plays **only with the KITT
-overlay theme**, all other themes speak without it; **`on`** = always; **`off`** =
-never. Independent of the voice distortion. No argument reports the current value.
+The **siren "howl"** (wyjec) mixed under the voice — the `voice_howl` key (needs `ffmpeg`). Values: **`auto`** (default) = howl plays **only with the `kitt` theme**, all other themes speak without it; **`on`** = always; **`off`** = never. Independent of the distortion. No argument = report current.
 
 ```bash
-python3 -c "
-import json, os, sys
-p = os.path.expanduser('~/.claude/simple-tts-config.json')
-with open(p) as f: c = json.load(f)
-arg = (sys.argv[1] if len(sys.argv) > 1 else '').strip().lower()
-if arg in ('on','off','auto'):
-    c['voice_howl'] = arg
-    with open(p, 'w') as f: json.dump(c, f, indent=2, ensure_ascii=False)
-print('voice_howl =', c.get('voice_howl', 'auto'))
-" ${ARG:-}
+python3 "$CLI" set voice_howl <on|off|auto>     # only when an argument was given
+python3 "$CLI" get voice_howl auto              # to report the current value
 ```
 
-Pass the user's argument. Confirm (e.g. "Wyjec: auto (tylko przy motywie KITT)." / "…zawsze." / "…nigdy."). Applies to the next spoken line.
+Confirm (e.g. "Wyjec: auto (tylko przy motywie KITT)." / "…zawsze." / "…nigdy."). Applies to the next spoken line.
 
 ## /tts distortion [on|off|auto]
 
-Toggle the **voice distortion** (KITT-style −20 Hz pitch) — the `voice_distortion`
-config key. Values: **`auto`** (default) = distortion on for the KITT-family themes
-(`kitt`, `cylon`), **off for `spark`** (plain voice); **`on`** = always; **`off`** =
-never. Independent of the howl. No argument reports the current value.
+The **voice distortion** (KITT-style −20 Hz pitch) — the `voice_distortion` key. Values: **`auto`** (default) = on for the KITT-family themes (`kitt`, `cylon`), **off for `spark`** (plain voice); **`on`** = always; **`off`** = never. Independent of the howl. No argument = report current.
 
 ```bash
-python3 -c "
-import json, os, sys
-p = os.path.expanduser('~/.claude/simple-tts-config.json')
-with open(p) as f: c = json.load(f)
-arg = (sys.argv[1] if len(sys.argv) > 1 else '').strip().lower()
-if arg in ('on','off','auto'):
-    c['voice_distortion'] = arg
-    with open(p, 'w') as f: json.dump(c, f, indent=2, ensure_ascii=False)
-print('voice_distortion =', c.get('voice_distortion', 'auto'))
-" ${ARG:-}
+python3 "$CLI" set voice_distortion <on|off|auto>   # only when an argument was given
+python3 "$CLI" get voice_distortion auto            # to report the current value
 ```
 
-Pass the user's argument. Confirm (e.g. "Zniekształcenie: auto (kitt/cylon tak, spark nie)." / "…zawsze." / "…nigdy."). Applies to the next spoken line.
-
-## /tts theme [name]
-
-Pick the **overlay animation theme** — the `overlay_theme` config key. Available
-themes: `kitt` (Knight Rider scanner, default; turns into KARR's yellow scanner
-when waiting), `cylon` (Battlestar Galactica red eye), `spark` (green cat-eye lens
-with a spark stream; splits one lens per working agent, blue when waiting). The
-running overlay picks the change up live (within a second), no restart needed. No
-argument reports the current theme and lists the options.
-
-```bash
-python3 -c "
-import json, os, sys
-p = os.path.expanduser('~/.claude/simple-tts-config.json')
-themes = ('kitt', 'cylon', 'spark')
-with open(p) as f: c = json.load(f)
-arg = (sys.argv[1] if len(sys.argv) > 1 else '').strip().lower()
-if arg:
-    if arg not in themes:
-        print('nieznany motyw:', arg, '| dostępne:', ', '.join(themes)); sys.exit(1)
-    c['overlay_theme'] = arg
-    with open(p, 'w') as f: json.dump(c, f, indent=2, ensure_ascii=False)
-print('overlay_theme =', c.get('overlay_theme', 'kitt'))
-" ${ARG:-}
-```
-
-Pass the user's theme name as the argument. Confirm the resulting theme in Polish
-(e.g. "Motyw nakładki: spark — zielone kocie oko."). Remind that the overlay
-itself is toggled by `knight-rider on|off` if it is currently off.
+Confirm (e.g. "Zniekształcenie: auto (kitt/cylon tak, spark nie)." / "…zawsze." / "…nigdy."). Applies to the next spoken line.
 
 ## /tts status
 
-Read the config and report:
-- enabled: `enabled` key (missing key = enabled)
-- voice, rate, language
-- scanner overlay: `knight_rider` key (missing key = on)
-- overlay theme: `overlay_theme` key (missing key = kitt)
-- voice howl (siren): `voice_howl` key (missing = auto — only with the KITT theme)
-- voice distortion: `voice_distortion` key (missing = auto — kitt/cylon yes, spark no)
-- quiet hours, if `quiet_hours` is set (speech is silenced between start and end)
+Print the effective config in one shot:
+
+```bash
+python3 "$CLI" show
+```
+
+It lists: enabled, voice, rate, language, engine, overlay theme (`overlay_theme`, default spark), overlay on/off (`knight_rider`, default on), voice howl (`voice_howl`, default auto — only with the KITT theme), voice distortion (`voice_distortion`, default auto — kitt/cylon yes, spark no), quiet hours (if set) and the cache budget. Present it readably in Polish.
 
 ## /tts cache [stats|prune|clear]
 
-Manages the on-disk edge-tts audio cache via `cache_cli.py`. No subcommand = `stats`.
-Resolve the script path (works whether invoked as an installed plugin or from the repo), then run it:
+Manages the on-disk edge-tts audio cache via `cache_cli.py`. No subcommand = `stats`. Resolve its path the same way as `$CLI` (swap `config_cli.py` → `cache_cli.py`), then run it:
 
 ```bash
-CLI="$(ls "${CLAUDE_PLUGIN_ROOT:-}/hooks/cache_cli.py" 2>/dev/null \
+CACHE="$(ls "${CLAUDE_PLUGIN_ROOT:-}/hooks/cache_cli.py" 2>/dev/null \
   || ls ~/.claude/plugins/cache/*/simple-tts/*/hooks/cache_cli.py 2>/dev/null | sort -V | tail -1 \
   || ls "$PWD/hooks/cache_cli.py" 2>/dev/null)"
-python3 "$CLI" stats
+python3 "$CACHE" stats
 ```
 
 - `/tts cache` or `/tts cache stats` → run with `stats`: prints each cached phrase, its play count, last-used time and size, plus total size vs the `cache_max_mb` budget. Show the output to the user. Safe to add a TTS tag.

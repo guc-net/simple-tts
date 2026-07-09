@@ -55,8 +55,8 @@ DEFAULT_CONFIG = {
     # distortion are controlled separately by voice_howl / voice_distortion.)
     "knight_rider": True,
     # Overlay animation theme: kitt | cylon | spark.
-    # Unknown values fall back to "kitt". Switchable live (/tts theme <name>).
-    "overlay_theme": "kitt",
+    # Unknown values fall back to "spark". Switchable live (/tts theme <name>).
+    "overlay_theme": "spark",
 }
 
 # Map of language names (as stored by the setup skill) to phonetic dict codes
@@ -344,7 +344,7 @@ def _howl_on(config):
         return True
     if mode == 'off':
         return False
-    return str(config.get('overlay_theme', 'kitt')).strip().lower() == 'kitt'
+    return str(config.get('overlay_theme', 'spark')).strip().lower() == 'kitt'
 
 
 def _distortion_on(config):
@@ -358,7 +358,7 @@ def _distortion_on(config):
         return True
     if v == 'off':
         return False
-    return str(config.get('overlay_theme', 'kitt')).strip().lower() in ('kitt', 'cylon')
+    return str(config.get('overlay_theme', 'spark')).strip().lower() in ('kitt', 'cylon')
 
 
 def speak(text, priority=False, force=False):
