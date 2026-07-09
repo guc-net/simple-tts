@@ -35,8 +35,8 @@ BUSY_DIR = os.path.expanduser("~/.claude/simple-tts-busy.d")
 BUSY_STALE_SEC = 900          # znacznik starszy niż 15 min = osierocony, ignoruj
 # Katalog znaczników „sesja czeka na użytkownika" (zgoda na narzędzie itp.).
 ATTENTION_DIR = os.path.expanduser("~/.claude/simple-tts-attention.d")
-ATTENTION_STALE_SEC = 1800    # czekanie bywa długie, ale osierocone znaczniki
-                              # nie mogą migać w nieskończoność -> 30 min
+ATTENTION_STALE_SEC = 600     # brak reakcji przez 10 min = wracamy do zwykłego
+                              # trybu (osierocony/porzucony znacznik nie miga dalej)
 AUDIO_PROCS = ("afplay", "say")
 DEFAULT_THEME = "spark"
 

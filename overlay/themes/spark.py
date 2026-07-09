@@ -280,11 +280,13 @@ class SparkTheme(Theme):
         spread = max(abs(self.lens_x[i] - self.cx) for i in range(MAXL))
         extra = max(self.lens_a[i] for i in range(1, MAXL))
         merged = spread < 0.6 and extra < 0.06
-        # obracaj dopiero PO scaleniu; scalaj/odobracaj zawsze swobodnie
+        # obracaj dopiero PO scaleniu; scalaj/odobracaj zawsze swobodnie.
+        # Obrót MOWY jest szybki (tau 0.12) — dźwięk startuje od razu, więc oko
+        # musi być poziomo, zanim się odezwie; inaczej „gada przekrzywione".
         rot_goal = 1.0 if speak else 0.0
         if rot_goal > self.rphase and not merged:
             rot_goal = self.rphase
-        self.rphase = ease_step(self.rphase, rot_goal, dt, 0.45)
+        self.rphase = ease_step(self.rphase, rot_goal, dt, 0.12)
 
         # drżenie reaktywne PER SOCZEWKA: każde oko odlicza własny licznik i
         # ma własną obwiednię (wjeżdża szybko, wraca płynnie)
@@ -294,12 +296,16 @@ class SparkTheme(Theme):
             self.shake_amp[i] = ease_step(self.shake_amp[i], a_t, dt,
                                           0.03 if a_t > self.shake_amp[i] else 0.09)
 
+        # przy wejściu w mowę scalaj soczewki szybko, żeby obrót ruszył od razu;
+        # rozdzielanie/scalanie wg liczby agentów poza mową zostaje płynne
+        mtau_x = 0.14 if speak else 0.35
+        mtau_a = 0.12 if speak else 0.3
         for i in range(MAXL):
             active = i < eff
             tx = self.cx + (i - (eff - 1) / 2.0) * LENS_SEP if active else self.cx
-            self.lens_x[i] = ease_step(self.lens_x[i], tx, dt, 0.35)
+            self.lens_x[i] = ease_step(self.lens_x[i], tx, dt, mtau_x)
             self.lens_a[i] = ease_step(self.lens_a[i], 1.0 if active else 0.0,
-                                       dt, 0.3)
+                                       dt, mtau_a)
 
         self._draw_lens(now, mode)
         self._draw_stream(dt, now)

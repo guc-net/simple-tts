@@ -100,6 +100,29 @@ def test_stop_hook_clears_attention_and_busy(write_config, isolated_paths, monke
     assert not (isolated_paths / "busy.d" / "sess2").exists()
 
 
+def test_session_end_hook_clears_attention_and_busy(write_config, isolated_paths,
+                                                    monkeypatch):
+    """Zamknięcie sesji -> SessionEnd sprząta oba znaczniki (bez osieroceń)."""
+    write_config()
+    tts_utils.set_session_busy("sessE", True)
+    tts_utils.set_session_attention("sessE", True)
+    import session_end
+    monkeypatch.setattr(session_end, "read_hook_input",
+                        lambda: {"session_id": "sessE"})
+    with pytest.raises(SystemExit):
+        session_end.main()
+    assert not (isolated_paths / "attention.d" / "sessE").exists()
+    assert not (isolated_paths / "busy.d" / "sessE").exists()
+
+
+def test_session_end_hook_noop_without_config(isolated_paths, monkeypatch):
+    import session_end
+    monkeypatch.setattr("sys.stdin", io.StringIO('{"session_id": "x"}'))
+    with pytest.raises(SystemExit):
+        session_end.main()
+    assert not (isolated_paths / "attention.d").exists()
+
+
 def test_post_tool_use_hook_clears_attention(write_config, isolated_paths, monkeypatch):
     """Zgoda udzielona -> narzędzie się wykonało -> PostToolUse zdejmuje znacznik."""
     write_config()
