@@ -17,7 +17,12 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
-from tts_utils import load_config, voice_gender
+from tts_utils import (
+    load_config,
+    set_session_attention,
+    set_session_busy,
+    voice_gender,
+)
 
 # The `speak` tool's fully-qualified name depends on how the MCP server was
 # loaded. Marketplace plugin install namespaces it under the plugin; a
@@ -140,12 +145,33 @@ def build_instruction(config):
     return build_tag_instruction(config)
 
 
+def _clear_session_markers():
+    """Nowy start sesji (startup / resume / /clear) — sesja nie czeka na usera
+    ani nie pracuje. Zdejmij jej znaczniki attention i busy, żeby overlay nie
+    wisiał na kolorze uwagi po wyczyszczeniu rozmowy. Odczyt stdin tylko gdy to
+    realny hook (nie terminal), żeby ręczne uruchomienie się nie blokowało."""
+    if sys.stdin.isatty():
+        return
+    try:
+        session_id = (json.load(sys.stdin) or {}).get("session_id")
+    except Exception:
+        return
+    if not session_id:
+        return
+    try:
+        set_session_attention(session_id, False)
+        set_session_busy(session_id, False)
+    except Exception:
+        pass
+
+
 def main():
     config = load_config()
     if config is None:
         # Plugin enabled but not configured — inject nothing
         sys.exit(0)
 
+    _clear_session_markers()
     print(json.dumps({
         "hookSpecificOutput": {
             "hookEventName": "SessionStart",

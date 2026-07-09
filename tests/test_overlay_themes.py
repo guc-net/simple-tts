@@ -44,14 +44,14 @@ def _run(theme, mode, frames=90, level=0.0, snap=SNAP, t0=100.0):
 
 
 def test_registry_has_all_themes():
-    assert set(THEME_NAMES) >= {"kitt", "cylon", "hal", "ekg", "matrix", "spark"}
+    assert set(THEME_NAMES) >= {"kitt", "cylon", "spark"}
 
 
 def test_unknown_theme_falls_back_to_kitt():
     assert type(_mk("no-such-theme")) is type(_mk("kitt"))
 
 
-@pytest.mark.parametrize("name", ["kitt", "cylon", "hal", "ekg", "matrix", "spark"])
+@pytest.mark.parametrize("name", ["kitt", "cylon", "spark"])
 def test_sprites_are_rgba_images(name):
     from PIL import Image
     spr = _mk(name).sprites()
@@ -61,7 +61,7 @@ def test_sprites_are_rgba_images(name):
         assert img.mode == "RGBA", key
 
 
-@pytest.mark.parametrize("name", ["kitt", "cylon", "hal", "ekg", "matrix", "spark"])
+@pytest.mark.parametrize("name", ["kitt", "cylon", "spark"])
 def test_layers_reference_existing_sprites(name):
     t = _mk(name)
     keys = set(t.sprites().keys())
@@ -74,7 +74,7 @@ def test_layers_reference_existing_sprites(name):
         assert spec["w"] > 0 and spec["h"] > 0
 
 
-@pytest.mark.parametrize("name", ["kitt", "cylon", "hal", "ekg", "matrix", "spark"])
+@pytest.mark.parametrize("name", ["kitt", "cylon", "spark"])
 @pytest.mark.parametrize("mode", MODES)
 def test_step_updates_are_valid_and_animate(name, mode):
     t = _mk(name)
@@ -84,16 +84,18 @@ def test_step_updates_are_valid_and_animate(name, mode):
     assert ups, f"{name}/{mode}: martwa animacja (zero aktualizacji)"
     for idx, prop, val in ups:
         assert 0 <= idx < n
-        assert prop in ("op", "pos", "img")
+        assert prop in ("op", "pos", "img", "xf")
         if prop == "op":
             assert 0.0 <= val <= 1.0
         elif prop == "img":
             assert val in keys
-        else:
+        elif prop == "pos":
             assert len(val) == 2
+        else:                                     # xf — (kąt, sx, sy)
+            assert len(val) == 3
 
 
-@pytest.mark.parametrize("name", ["kitt", "cylon", "hal", "ekg", "matrix", "spark"])
+@pytest.mark.parametrize("name", ["kitt", "cylon", "spark"])
 def test_invalidate_forces_full_reemit(name):
     t = _mk(name)
     _run(t, "idle", frames=30)
@@ -102,34 +104,14 @@ def test_invalidate_forces_full_reemit(name):
     assert ups, "po invalidate() pierwsza klatka musi zapisać stan warstw"
 
 
-@pytest.mark.parametrize("name", ["kitt", "cylon", "hal", "ekg", "matrix", "spark"])
+@pytest.mark.parametrize("name", ["kitt", "cylon", "spark"])
 def test_fps_sane_for_every_mode(name):
     t = _mk(name)
     for mode in MODES:
         assert 5 <= t.fps(mode) <= 60
 
 
-@pytest.mark.parametrize("name", ["kitt", "cylon", "hal", "ekg", "matrix", "spark"])
-def test_fleet_pips_show_busy_count(name):
-    """think z busy=3 -> dokładnie 3 kropki licznika zapalone (po tym, jak
-    zdążą płynnie wjechać)."""
-    t = _mk(name)
-    assert len(t.pip_indices) == 5
-    snap = {"busy": 3, "age": 0.0}
-    t.enter_mode("think", snap)
-    t.invalidate()
-    ops, now = {}, 100.0
-    for _ in range(int(2.0 * t.fps("think"))):
-        now += 1.0 / t.fps("think")
-        for idx, prop, val in t.step(1.0 / t.fps("think"), now, 0.0, snap):
-            if prop == "op" and idx in t.pip_indices:
-                ops[idx] = val
-    lit = [i for i in t.pip_indices if ops.get(i, 0.0) > 0.5]
-    dark = [i for i in t.pip_indices if ops.get(i, 1.0) < 0.05]
-    assert len(lit) == 3 and len(dark) == 2
-
-
-@pytest.mark.parametrize("name", ["kitt", "cylon", "hal", "ekg", "matrix", "spark"])
+@pytest.mark.parametrize("name", ["kitt", "cylon", "spark"])
 def test_fleet_pips_hidden_in_idle(name):
     t = _mk(name)
     snap = {"busy": 0, "age": 0.0}

@@ -205,18 +205,21 @@ def theme_name():
 
 
 def current_mode():
-    """'speak' | 'attention' | 'think' | 'idle' | None (wyłączone)."""
+    """Aktywność (RUCH): 'speak' | 'think' | 'idle' | None (wyłączone).
+    Uwaga (czekanie na użytkownika) jest OSOBNĄ osią — patrz snapshot()['waiting']
+    — i zmienia tylko KOLOR, nie ruch."""
     if not overlay_enabled():
         return None
     if is_speaking():
         return "speak"
-    if is_attention():
-        return "attention"
     if is_busy():
         return "think"
     return "idle"
 
 
 def snapshot():
-    """Pełny stan dla nakładki: {'mode','busy','age'} — jeden odczyt na tick."""
-    return {"mode": current_mode(), "busy": busy_count(), "age": busy_age()}
+    """Pełny stan dla nakładki: {'mode','busy','age','waiting'} — jeden odczyt
+    na tick. `mode` steruje ruchem, `waiting` tylko kolorem (do reakcji usera)."""
+    mode = current_mode()
+    return {"mode": mode, "busy": busy_count(), "age": busy_age(),
+            "waiting": is_attention() if mode is not None else False}

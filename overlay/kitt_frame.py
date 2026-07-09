@@ -18,6 +18,30 @@ CORE = (225, 28, 10)      # głęboka nasycona czerwień diod (jak w KITT)
 HOT = (255, 116, 32)      # rozgrzany segment: intensywny pomarańczowo-czerwony
 
 
+def lamp_sprite(w, h, color=CORE, boost=1.55):
+    """Pionowa lampa-segment KITT-a: zaokrąglony prostokąt (superelipsa) z
+    miękko gasnącymi krawędziami — świecący segment listwy skanera."""
+    w, h = max(2, int(w)), max(2, int(h))
+    img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    p = img.load()
+    rx, ry = w / 2.0, h / 2.0
+    for y in range(h):
+        ny = (y - ry + 0.5) / ry
+        for x in range(w):
+            nx = (x - rx + 0.5) / rx
+            d = (abs(nx) ** 4 + abs(ny) ** 4) ** 0.25   # zaokrąglony prostokąt
+            if d >= 1.0:
+                a = 0.0
+            elif d <= 0.58:
+                a = 1.0
+            else:
+                a = 1.0 - (d - 0.58) / 0.42
+            a *= a
+            p[x, y] = (color[0], color[1], color[2],
+                       max(0, min(255, int(255 * a * boost))))
+    return img
+
+
 def dot_sprite(px, boost=1.6):
     """Pojedyncza świecąca kropka jako RGBA (przezroczyste tło): jasny środek,
     miękko gasnące krawędzie."""

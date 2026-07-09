@@ -62,119 +62,160 @@ def _steps(t, mode, now, seconds, snap=SNAP, level=0.0, ops=None, imgs=None):
     return now, first
 
 
-# --- bramki attention wjeżdżają, nie wskakują --------------------------------
+# --- uwaga = tylko KOLOR (ruch wg aktywności); kolor wjeżdża po bramce --------
 
-@pytest.mark.parametrize("name,attr", [("kitt", "i_amber"), ("cylon", "i_amber")])
-def test_amber_ramps_in_on_attention(name, attr):
+WAIT = {"busy": 1, "age": 0.0, "waiting": True}
+
+
+@pytest.mark.parametrize("name", ["kitt", "cylon"])
+def test_attn_color_ramps_in_when_waiting(name):
     t = _mk(name)
-    now, ops, imgs = _settle(t, "think")
-    idxs = getattr(t, attr)
-    # przełączenie wyrównane do okna błysku (blink(now)==1 dla now%1.2<0.14)
-    now = now - (now % 1.2) + 1.2
-    t.enter_mode("attention", SNAP)
-    now, first = _steps(t, "attention", now, 0.0, ops=ops, imgs=imgs)
-    for idx, prop, val in first:
-        if prop == "op" and idx in idxs:
-            assert val < 0.35, "bursztyn ma wjechać po bramce, nie wskoczyć"
-    # po ~2 s bramka otwarta: w oknie błysku bursztyn jest już jasny
-    best = 0.0
-    fps = t.fps("attention")
-    for _ in range(int(2.5 * fps)):
+    now, ops, imgs = _settle(t, "think")          # ruch think, bez czekania
+    now, first = _steps(t, "think", now, 0.0, snap=WAIT, ops=ops, imgs=imgs)
+    for idx, prop, val in first:                   # pierwsza klatka: kolor wjeżdża
+        if prop == "op" and idx in t.i_amber:
+            assert val < 0.5, "kolor uwagi ma wjechać po bramce, nie wskoczyć"
+    best, fps = 0.0, t.fps("think")
+    for _ in range(int(2.0 * fps)):                # po ~2 s kolor jedzie z okiem
         now += 1.0 / fps
-        for idx, prop, val in t.step(1.0 / fps, now, 0.0, SNAP):
-            if prop == "op" and idx in idxs:
+        for idx, prop, val in t.step(1.0 / fps, now, 0.0, WAIT):
+            if prop == "op" and idx in t.i_amber:
                 best = max(best, val)
     assert best > 0.6
 
 
-def test_hal_ring_ramps_in_on_attention():
-    t = _mk("hal")
-    now, ops, imgs = _settle(t, "think")
-    now = now - (now % 1.2) + 1.2
-    t.enter_mode("attention", SNAP)
-    now, first = _steps(t, "attention", now, 0.0, ops=ops, imgs=imgs)
-    for idx, prop, val in first:
-        if prop == "op" and idx == t.i_ring:
-            assert val < 0.35
+# --- spark: uwaga przemalowuje oko (zielone -> kolor) i iskry ------------------
 
-
-def test_hal_brightness_eases_between_modes():
-    t = _mk("hal")
-    now, ops, imgs = _settle(t, "idle")
-    before = ops[t.i_glow]
-    t.enter_mode("think", SNAP)
-    now, first = _steps(t, "think", now, 0.0, ops=ops, imgs=imgs)
-    for idx, prop, val in first:
-        if prop == "op" and idx == t.i_glow:
-            assert abs(val - before) < 0.15, "jasność oka ma płynąć, nie skakać"
-
-
-def test_ekg_dot_fades_out_after_speak():
-    t = _mk("ekg")
-    now, ops, imgs = _settle(t, "speak", level=0.0)
-    t.enter_mode("idle", SNAP)
-    now, first = _steps(t, "idle", now, 0.0, ops=ops, imgs=imgs)
-    dot = [val for idx, prop, val in first if prop == "op" and idx == t.i_dot]
-    assert dot and dot[0] > 0.05, "kropka ma zgasnąć płynnie, nie z klatki na klatkę"
-
-
-# --- matrix: krycie/tempo płyną, kolor wymienia się kolumna po kolumnie ------
-
-def test_matrix_opacity_eases_on_mode_change():
-    t = _mk("matrix")
-    now, ops, imgs = _settle(t, "idle")
-    strip_idx = set(range(2 * t.n_cols))
-    before = max(ops[i] for i in strip_idx)
-    t.enter_mode("think", SNAP)
-    now, first = _steps(t, "think", now, 0.0, ops=ops, imgs=imgs)
-    for idx, prop, val in first:
-        if prop == "op" and idx in strip_idx:
-            assert abs(val - before) < 0.15
-
-
-def test_matrix_recolors_column_by_column():
-    t = _mk("matrix")
-    now, ops, imgs = _settle(t, "think")
-    strip_idx = set(range(2 * t.n_cols))
-    t.enter_mode("attention", SNAP)
-    now, first = _steps(t, "attention", now, 0.0, ops=ops, imgs=imgs)
-    swapped_first = sum(1 for idx, prop, val in first
-                        if prop == "img" and idx in strip_idx and "astrip" in val)
-    assert swapped_first <= 2 * t.n_cols * 0.25, \
-        "kolor ma się wymieniać kolumnami, nie wszystkie naraz"
-    now, _ = _steps(t, "attention", now, 3.0, ops=ops, imgs=imgs)
-    amber = sum(1 for i in strip_idx if "astrip" in imgs[i])
-    assert amber == 2 * t.n_cols, "po paru sekundach cały deszcz jest bursztynowy"
-
-
-# --- spark: soczewka krosfejdem między dwiema warstwami -----------------------
-
-def test_spark_attention_is_a_crossfade():
+def test_spark_eye_recolors_when_waiting():
     t = _mk("spark")
-    now, ops, imgs = _settle(t, "think")
-    t.enter_mode("attention", SNAP)
-    now, first = _steps(t, "attention", now, 0.0, ops=ops, imgs=imgs)
-    for idx, prop, val in first:
-        if prop == "op" and idx == t.i_lens_a:
-            assert val < 0.3, "bursztynowa soczewka ma wjechać krosfejdem"
-    now, _ = _steps(t, "attention", now, 2.5, ops=ops, imgs=imgs)
-    assert ops[t.i_lens_a] > 0.45
-    assert ops[t.i_lens_g] < 0.35
+    _n, ops, _i = _settle(t, "think", snap=WAIT, seconds=2.5)
+    # zielone oko przygasa, kolorowa nakładka uwagi (i_alens0) się rozjaśnia
+    assert ops.get(t.i_alens0, 0.0) > 0.4, "kolorowe oko uwagi ma wejść"
+    assert ops.get(t.i_lens_g, 1.0) < 0.3, "zielone oko ma przygasnąć"
+    assert not hasattr(t, "i_lens_a")
 
 
-# --- kropki licznika sesji też płyną ------------------------------------------
+def test_spark_sparks_turn_blue_when_waiting():
+    t = _mk("spark")
+    wait3 = {"busy": 3, "age": 0.0, "waiting": True}
+    _n, ops, imgs = _settle(t, "think", snap=wait3, seconds=3.0)
+    par_idx = set(range(t.i_par0, t.i_par0 + t.n))
+    att = sum(1 for i in par_idx if imgs.get(i, "").startswith("a"))
+    assert att > 0, "iskry mają być niebieskie, gdy ktoś czeka"
 
-@pytest.mark.parametrize("name", ["kitt", "cylon", "hal", "ekg", "matrix", "spark"])
-def test_pips_fade_in(name):
+
+def test_spark_shake_is_reactive_and_per_lens():
+    t = _mk("spark")
+    # idle: brak iskier -> wszystkie oczy stoją spokojnie
+    _settle(t, "idle", snap={"busy": 1, "age": 0.0}, seconds=2.0)
+    assert max(t.shake_amp) < 0.06, "w idle oczy mają stać spokojnie"
+    # think z 2 agentami: iskry wpadają, oczy drżą — ale NIE identycznie
+    snap = {"busy": 2, "age": 0.0}
+    t.enter_mode("think", snap)
+    now, peak_amp, peak_ang, desync = 100.0, 0.0, 0.0, 0.0
+    for _ in range(int(4.0 * t.fps("think"))):
+        now += 1.0 / t.fps("think")
+        for idx, prop, val in t.step(1.0 / t.fps("think"), now, 0.0, snap):
+            if prop == "xf" and idx == t.i_lens_g:
+                peak_ang = max(peak_ang, abs(val[0]))
+        peak_amp = max(peak_amp, max(t.shake_amp))
+        desync = max(desync, abs(t.shake_amp[0] - t.shake_amp[1]))
+    assert peak_amp > 0.3, "gdy iskry wpadają, oko ma się trząść"
+    assert peak_ang > 0.03, "przy drżeniu oko ma się też przechylać"
+    assert desync > 0.15, "dwa oczy mają trząść się OSOBNO, nie identycznie"
+
+
+@pytest.mark.parametrize("name", ["kitt", "cylon"])
+def test_attn_color_same_in_speak_and_think(name):
+    # KITT i Cylon: jeden kolor uwagi (pomarańcz) — bez zmiany na żółto przy mowie
     t = _mk(name)
-    snap0 = {"busy": 0, "age": 0.0}
-    snap3 = {"busy": 3, "age": 0.0}
-    now, ops, imgs = _settle(t, "idle", snap=snap0)
-    t.enter_mode("think", snap3)
-    now, first = _steps(t, "think", now, 0.0, snap=snap3, ops=ops, imgs=imgs)
-    for idx, prop, val in first:
-        if prop == "op" and idx in t.pip_indices:
-            assert val < 0.4, "kropki licznika mają wjechać, nie wskoczyć"
-    now, _ = _steps(t, "think", now, 2.0, snap=snap3, ops=ops, imgs=imgs)
-    lit = [i for i in t.pip_indices if ops[i] > 0.6]
-    assert len(lit) == 3
+    assert t.ATTN_COLOR == t.ATTN_SPEAK, "jeden kolor uwagi, ten sam przy mowie"
+
+
+def test_kitt_has_no_backing_background():
+    t = _mk("kitt")
+    assert "backing" not in t.sprites(), "KITT bez tła (tylko sunące światło)"
+    assert _mk("cylon").sprites().get("backing") is not None, "Cylon zostaje z tłem"
+
+
+@pytest.mark.parametrize("name", ["kitt", "cylon"])
+def test_kitt_heads_grow_with_busy(name):
+    # więcej agentów -> więcej „głów" w przejeździe -> szersza grupa diod
+    def lit_glow(busy):
+        t = _mk(name)
+        snap = {"busy": busy, "age": 0.0}
+        _n, ops, _i = _settle(t, "think", snap=snap, seconds=2.5)
+        return sum(1 for i in t.i_glow if ops.get(i, 0.0) > 0.55)
+    assert lit_glow(1) < lit_glow(4), "więcej agentów ma zapalać więcej głów"
+
+
+def test_cylon_attn_color_follows_the_sweep():
+    # kolor uwagi JEDZIE z okiem (nie miga naraz): część diod jasna, część ciemna
+    t = _mk("cylon")
+    _n, ops, _i = _settle(t, "think", snap=WAIT, seconds=3.0)
+    lit = [i for i in t.i_amber if ops.get(i, 0.0) > 0.5]
+    dark = [i for i in t.i_amber if ops.get(i, 0.0) < 0.15]
+    assert lit and dark, "kolor uwagi ma jechać z okiem, nie zapalać się wszędzie"
+
+
+def test_spark_no_sparks_while_speaking():
+    t = _mk("spark")
+    now, ops, imgs = _settle(t, "speak", level=0.6, seconds=3.0)
+    par_idx = set(range(t.i_par0, t.i_par0 + t.n))
+    lit = [i for i in par_idx if ops.get(i, 0.0) > 0.02]
+    assert not lit, "podczas mowy iskry nie latają (zostaje samo oko)"
+
+
+def test_spark_no_sparks_when_idle():
+    t = _mk("spark")
+    now, ops, imgs = _settle(t, "idle", snap={"busy": 1, "age": 0.0}, seconds=3.0)
+    par_idx = set(range(t.i_par0, t.i_par0 + t.n))
+    lit = [i for i in par_idx if ops.get(i, 0.0) > 0.02]
+    assert not lit, "w idle nie ma latających iskier"
+
+
+def test_spark_more_agents_more_sparks():
+    def lit_count(busy):
+        t = _mk("spark")
+        _n, ops, _i = _settle(t, "think", snap={"busy": busy, "age": 0.0},
+                              seconds=3.0)
+        par = range(t.i_par0, t.i_par0 + t.n)
+        return sum(1 for i in par if ops.get(i, 0.0) > 0.02)
+    c1, c3, c5 = lit_count(1), lit_count(3), lit_count(5)
+    assert c1 < c3 < c5, f"więcej agentów -> więcej iskier ({c1} < {c3} < {c5})"
+
+
+def test_spark_lens_count_follows_busy():
+    lens_idx = lambda t: list(range(t.i_alens0))          # noqa: E731
+    for busy, want in ((1, 1), (2, 2), (3, 3), (5, 5)):
+        t = _mk("spark")
+        _n, ops, _i = _settle(t, "think", snap={"busy": busy, "age": 0.0},
+                              seconds=3.0)
+        lit = [i for i in lens_idx(t) if ops.get(i, 0.0) > 0.4]
+        assert len(lit) == want, f"{busy} agentów -> {want} soczewek (jest {len(lit)})"
+
+
+def test_spark_merges_and_rotates_when_speaking():
+    t = _mk("spark")
+    _n, ops, _i = _settle(t, "speak", snap={"busy": 3, "age": 0.0},
+                          level=0.5, seconds=3.5)
+    lit = [i for i in range(t.i_alens0) if ops.get(i, 0.0) > 0.4]
+    assert len(lit) == 1, "przy mowie soczewki scalają się w jedną"
+    assert t.rphase > 0.9, "po scaleniu oko się obraca"
+    assert all(abs(t.lens_x[i] - t.cx) < 1.0 for i in range(t.i_alens0))
+
+
+def test_spark_rotation_waits_for_merge():
+    t = _mk("spark")
+    _settle(t, "think", snap={"busy": 3, "age": 0.0}, seconds=3.0)   # rozdzielone
+    snap = {"busy": 3, "age": 0.0}
+    t.enter_mode("speak", snap)
+    fps, now, saw = t.fps("speak"), 200.0, False
+    for _ in range(int(0.25 * fps)):
+        now += 1.0 / fps
+        t.step(1.0 / fps, now, 0.4, snap)
+        spread = max(abs(t.lens_x[i] - t.cx) for i in range(t.i_alens0))
+        if spread > 3.0:                            # jeszcze rozjechane
+            assert t.rphase < 0.2, "obrót ma czekać, aż soczewki się scalą"
+            saw = True
+    assert saw, "test miał uchwycić moment scalania"

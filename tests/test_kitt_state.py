@@ -121,32 +121,37 @@ def test_tts_active_gate_true_when_pid_alive(paths, monkeypatch):
     assert KS._tts_active() is True
 
 
-# --- tryb attention (sesja czeka na zgodę użytkownika) ----------------------
+# --- uwaga (czekanie na usera) to OSOBNA oś: waiting, nie mode ---------------
 
-def test_attention_mode_when_marker_fresh(paths):
+def test_waiting_flag_when_marker_fresh(paths):
     _config(paths)
     _attention(paths)
-    assert KS.current_mode() == "attention"
+    # uwaga nie zmienia ruchu (mode=idle), tylko podnosi flagę waiting
+    assert KS.current_mode() == "idle"
+    assert KS.snapshot()["waiting"] is True
 
 
-def test_speak_beats_attention(paths, monkeypatch):
+def test_waiting_orthogonal_to_think(paths):
+    _config(paths)
+    _busy(paths)              # inny agent pracuje -> ruch think
+    _attention(paths)         # i ktoś czeka -> waiting
+    snap = KS.snapshot()
+    assert snap["mode"] == "think"      # RUCH wg aktywności (szybki)
+    assert snap["waiting"] is True      # KOLOR wg czekania
+
+
+def test_speak_activity_with_waiting(paths, monkeypatch):
     _config(paths)
     _attention(paths)
     _audio(monkeypatch, on=True)
-    assert KS.current_mode() == "speak"
+    snap = KS.snapshot()
+    assert snap["mode"] == "speak" and snap["waiting"] is True
 
 
-def test_attention_beats_think(paths):
-    _config(paths)
-    _busy(paths)
-    _attention(paths)
-    assert KS.current_mode() == "attention"
-
-
-def test_stale_attention_ignored(paths):
+def test_stale_attention_not_waiting(paths):
     _config(paths)
     _attention(paths, age=KS.ATTENTION_STALE_SEC + 60)
-    assert KS.current_mode() == "idle"
+    assert KS.snapshot()["waiting"] is False
 
 
 # --- licznik sesji i wiek pracy ----------------------------------------------

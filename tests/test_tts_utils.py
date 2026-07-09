@@ -143,6 +143,54 @@ class TestSpeak:
         assert payload["text"] == "dzień dobry"
         assert payload["say_voice"] == "Krzysztof"  # fallback voice preserved
 
+    def _payload(self, fake_say, **cfg):
+        write = self._write
+        write(voice="Krzysztof", language="Polish", **cfg)
+        speak("hej")
+        return json.loads(fake_say.envs[0]["SIMPLE_TTS_PAYLOAD"])
+
+    def test_howl_auto_plays_only_with_kitt_theme(self, write_config, fake_say):
+        self._write = write_config
+        # motyw KITT -> wyjec gra
+        assert self._payload(fake_say, overlay_theme="kitt")["intro_sound"] == "kitt"
+
+    def test_voice_profile_follows_theme(self, write_config, fake_say):
+        self._write = write_config
+        # kitt: wyjec + zniekształcenie
+        p = self._payload(fake_say, overlay_theme="kitt")
+        assert (p["intro_sound"], p["edge_pitch"]) == ("kitt", "-20Hz")
+
+    def test_cylon_distorted_without_howl(self, write_config, fake_say):
+        self._write = write_config
+        # cylon: bez wyjca, ale zniekształcony
+        p = self._payload(fake_say, overlay_theme="cylon")
+        assert p["intro_sound"] == "none"
+        assert p["edge_pitch"] == "-20Hz"
+
+    def test_spark_plain_voice(self, write_config, fake_say):
+        self._write = write_config
+        # spark: zwykły głos — bez wyjca i bez zniekształcenia
+        p = self._payload(fake_say, overlay_theme="spark")
+        assert p["intro_sound"] == "none"
+        assert p["edge_pitch"] == "+0Hz"
+
+    def test_howl_off_silences_even_on_kitt(self, write_config, fake_say):
+        self._write = write_config
+        p = self._payload(fake_say, overlay_theme="kitt", voice_howl="off")
+        assert p["intro_sound"] == "none"
+
+    def test_howl_on_forces_it_on_other_themes(self, write_config, fake_say):
+        self._write = write_config
+        p = self._payload(fake_say, overlay_theme="spark", voice_howl="on")
+        assert p["intro_sound"] == "kitt"
+
+    def test_distortion_is_independent_of_howl(self, write_config, fake_say):
+        self._write = write_config
+        # wyłączone zniekształcenie -> pitch neutralny, niezależnie od wyjca
+        p = self._payload(fake_say, overlay_theme="kitt", voice_distortion=False)
+        assert p["edge_pitch"] == "+0Hz"
+        assert p["intro_sound"] == "kitt"           # wyjec dalej gra
+
     def test_edge_engine_picks_female_voice_for_female_local_voice(self, write_config, fake_say):
         write_config(voice="Ewa", language="Polish")
         speak("gotowe")

@@ -1,6 +1,29 @@
 """Tests for the SessionStart hook: gender detection and instruction text."""
 
-from session_start import build_instruction, voice_gender
+import io
+import os
+
+import tts_utils
+from session_start import _clear_session_markers, build_instruction, voice_gender
+
+
+def test_session_start_clears_attention_and_busy(isolated_paths, monkeypatch):
+    # sesja czekała i pracowała; nowy start (np. /clear) ma zdjąć oba znaczniki
+    tts_utils.set_session_attention("sess-1", True)
+    tts_utils.set_session_busy("sess-1", True)
+    assert os.listdir(tts_utils.ATTENTION_DIR) and os.listdir(tts_utils.BUSY_DIR)
+    monkeypatch.setattr("sys.stdin", io.StringIO('{"session_id":"sess-1"}'))
+    _clear_session_markers()
+    assert not os.listdir(tts_utils.ATTENTION_DIR)
+    assert not os.listdir(tts_utils.BUSY_DIR)
+
+
+def test_session_start_skips_when_stdin_is_tty(isolated_paths, monkeypatch):
+    tts_utils.set_session_attention("sess-2", True)
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)   # terminal -> nie czyść
+    _clear_session_markers()
+    assert os.listdir(tts_utils.ATTENTION_DIR) == ["sess-2"]
 
 
 class TestVoiceGender:

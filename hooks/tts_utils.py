@@ -39,14 +39,22 @@ DEFAULT_CONFIG = {
     "cache_max_mb": 100,
     # Background sound mixed under the speech (1 s intro + quiet-ducked bed +
     # outro ending in the sound's quiet valley). "kitt" = Knight Rider bed;
-    # "none" (or "") = plain speech. Applies to the edge engine only. Only
-    # used when knight_rider is on (below).
+    # "none" (or "") = plain speech. Applies to the edge engine only. Whether it
+    # actually plays is decided by voice_howl (below), not by knight_rider.
     "intro_sound": "kitt",
-    # "Knight Rider" mode: the KITT siren bed under the voice + the floating
-    # scanner overlay animation (idle / thinking / speaking). One switch for
-    # both. Default on. When off: plain voice, no bed, no overlay.
+    # The siren "howl" (wyjec) mixed under the voice: "auto" = play it only with
+    # the KITT overlay theme (other themes → plain voice, no howl); "on" = always;
+    # "off" = never. Independent of voice_distortion. Default "auto".
+    "voice_howl": "auto",
+    # Voice distortion (−20 Hz pitch): "auto" = on for the KITT-family themes
+    # (kitt, cylon), off for spark (plain voice); "on"/"off" force it. Independent
+    # of the howl. Accepts legacy booleans (true=on / false=off). Default "auto".
+    "voice_distortion": "auto",
+    # "Knight Rider" mode: the floating scanner overlay animation (idle /
+    # thinking / speaking). Default on. When off: no overlay. (The voice howl and
+    # distortion are controlled separately by voice_howl / voice_distortion.)
     "knight_rider": True,
-    # Overlay animation theme: kitt | cylon | hal | ekg | matrix | spark.
+    # Overlay animation theme: kitt | cylon | spark.
     # Unknown values fall back to "kitt". Switchable live (/tts theme <name>).
     "overlay_theme": "kitt",
 }
@@ -328,6 +336,31 @@ def set_session_attention(session_id, on):
     _set_session_marker(ATTENTION_DIR, session_id, on)
 
 
+def _howl_on(config):
+    """Czy syrena (wyjec) ma grać pod głosem. voice_howl: auto|on|off;
+    auto = tylko przy motywie overlay 'kitt' (reszta motywów bez wyjca)."""
+    mode = str(config.get('voice_howl', 'auto')).strip().lower()
+    if mode == 'on':
+        return True
+    if mode == 'off':
+        return False
+    return str(config.get('overlay_theme', 'kitt')).strip().lower() == 'kitt'
+
+
+def _distortion_on(config):
+    """Czy głos ma zniekształcenie (−20 Hz). voice_distortion: auto|on|off
+    (lub stary bool). auto = motywy z rodziny KITT (kitt, cylon); spark bez."""
+    v = config.get('voice_distortion', 'auto')
+    if isinstance(v, bool):
+        return v
+    v = str(v).strip().lower()
+    if v == 'on':
+        return True
+    if v == 'off':
+        return False
+    return str(config.get('overlay_theme', 'kitt')).strip().lower() in ('kitt', 'cylon')
+
+
 def speak(text, priority=False, force=False):
     """
     Speak text using macOS say with the configured voice. Non-blocking:
@@ -393,11 +426,12 @@ def speak(text, priority=False, force=False):
                 "say_voice": voice,
                 "say_rate": rate,
                 "cache_max_mb": config.get('cache_max_mb', 100),
-                # Syrena i obniżony głos KITT-a tylko w trybie Knight Rider
-                # (chorus na miksie dobrany razem z tym pitchem, patrz edge_speak.py).
+                # Wyjec (syrena) i zniekształcenie (pitch) są NIEZALEŻNE:
+                #  - wyjec: voice_howl auto→tylko motyw KITT / on / off,
+                #  - zniekształcenie: voice_distortion (−20 Hz), osobno.
                 "intro_sound": (config.get('intro_sound', 'kitt')
-                                if config.get('knight_rider', True) else 'none'),
-                "edge_pitch": ("-20Hz" if config.get('knight_rider', True) else "+0Hz"),
+                                if _howl_on(config) else 'none'),
+                "edge_pitch": "-20Hz" if _distortion_on(config) else "+0Hz",
             })
             proc = subprocess.Popen(
                 [sys.executable, EDGE_SPEAK_PATH],

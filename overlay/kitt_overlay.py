@@ -5,7 +5,7 @@ Host odpowiada za wszystko, co wspólne: panele per ekran, timery (szybki
 render <-> wolny poll po wygaszeniu), odczyt stanu (kitt_state.snapshot),
 obwiednię mowy, płynne wygaszanie/budzenie i aplikowanie aktualizacji na
 CALayer-ach. SAM WYGLĄD (sprite'y, warstwy, ruch) dostarcza motyw z themes/
-(klucz `overlay_theme` w configu: kitt | cylon | hal | ekg | matrix | spark);
+(klucz `overlay_theme` w configu: kitt | cylon | spark);
 motyw można przełączać na żywo — host przebudowuje warstwy bez restartu.
 
 Stany (kitt_state):
@@ -53,6 +53,8 @@ from Foundation import NSMakeRect, NSObject, NSTimer  # noqa: E402
 from Quartz import (  # noqa: E402
     CALayer,
     CATransaction,
+    CGAffineTransformMakeRotation,
+    CGAffineTransformScale,
     CGColorSpaceCreateDeviceRGB,
     CGDataProviderCreateWithData,
     CGImageCreate,
@@ -77,7 +79,11 @@ def _menubar_height(default=30.0):
 
 
 W = 520
-H = int(round(_menubar_height()))   # listwa dokładnie na wysokość paska menu macOS
+H = int(round(_menubar_height()))   # obszar rysowania motywu = wysokość paska menu
+# panel jest odrobinę wyższy niż pasek menu — zapas u dołu, żeby oko/soczewka
+# nie były obcinane dolną krawędzią (mogą wystawać nieco pod pasek).
+PAD_BOTTOM = max(8, int(round(H * 0.5)))
+H_PANEL = H + PAD_BOTTOM             # realna wysokość okna/panelu
 SCALE = 2
 Y_OFFSET = 0                   # 0 = górna krawędź panelu równo z górą ekranu
 MODE_CHECK_SEC = 0.18
@@ -152,7 +158,7 @@ class OverlayPanel(NSPanel):
 def make_panel():
     """Pusty panel nakładki (warstwy dokłada _populate_container)."""
     panel = OverlayPanel.alloc().initWithContentRect_styleMask_backing_defer_(
-        NSMakeRect(0, 0, W, H), NSWindowStyleMaskNonactivatingPanel,
+        NSMakeRect(0, 0, W, H_PANEL), NSWindowStyleMaskNonactivatingPanel,
         NSBackingStoreBuffered, False)
     panel.setLevel_(NSScreenSaverWindowLevel)
     panel.setFloatingPanel_(True)
@@ -166,11 +172,11 @@ def make_panel():
     panel.setIgnoresMouseEvents_(True)
     panel.setHasShadow_(False)
 
-    view = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, W, H))
+    view = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, W, H_PANEL))
     view.setWantsLayer_(True)
     container = CALayer.layer()
-    container.setFrame_(NSMakeRect(0, 0, W, H))
-    container.setMasksToBounds_(True)     # przewijane motywy (ekg/matrix) tną się na listwie
+    container.setFrame_(NSMakeRect(0, 0, W, H_PANEL))
+    container.setMasksToBounds_(True)     # tnie do panelu (pasek + zapas u dołu)
     container.setOpacity_(0.0)
     view.layer().addSublayer_(container)
     panel.setContentView_(view)
@@ -180,7 +186,7 @@ def make_panel():
 
 def top_center(sf):
     x = sf.origin.x + (sf.size.width - W) / 2.0
-    y = sf.origin.y + sf.size.height - H - Y_OFFSET
+    y = sf.origin.y + sf.size.height - H_PANEL - Y_OFFSET
     return x, y
 
 
@@ -208,7 +214,7 @@ class Controller(NSObject):
         for spec in self.specs:
             lyr = CALayer.layer()
             lyr.setBounds_(((0.0, 0.0), (spec["w"], spec["h"])))
-            lyr.setPosition_((spec["x"], spec["y"]))
+            lyr.setPosition_((spec["x"], spec["y"] + PAD_BOTTOM))
             lyr.setContentsGravity_("resize")
             lyr.setContentsScale_(SCALE)
             lyr.setContents_(self.cgs[spec["img"]])
@@ -274,7 +280,8 @@ class Controller(NSObject):
         dopóki Claude nie zmieni stanu (a nie po prostu upływ czasu)."""
         try:
             snap = KS.snapshot()
-            if snap["mode"] == self.sleep_mode:
+            # zostań uśpiona tylko jeśli stan się nie zmienił I nikt nie czeka
+            if snap["mode"] == self.sleep_mode and not snap.get("waiting"):
                 return
             self.snap = snap
             self.mode = snap["mode"]
@@ -327,7 +334,8 @@ class Controller(NSObject):
                     self.speak = _read_envelope()
                 self.reposition_(False)
 
-            if self.mode == "idle" and now - self.idle_entered >= IDLE_SLEEP_SEC:
+            if self.mode == "idle" and not self.snap.get("waiting") \
+                    and now - self.idle_entered >= IDLE_SLEEP_SEC:
                 self.vis_t = 0.0
 
             k = 1.0 - math.exp(-dt / EASE_TAU)
@@ -372,7 +380,12 @@ class Controller(NSObject):
                     if prop == "op":
                         layers[idx].setOpacity_(val)
                     elif prop == "pos":
-                        layers[idx].setPosition_(val)
+                        layers[idx].setPosition_((val[0], val[1] + PAD_BOTTOM))
+                    elif prop == "xf":        # płynny obrót+skala wokół środka
+                        ang, sx, sy = val
+                        tr = CGAffineTransformMakeRotation(ang)
+                        layers[idx].setAffineTransform_(
+                            CGAffineTransformScale(tr, sx, sy))
                     else:                     # "img"
                         layers[idx].setContents_(self.cgs[val])
             CATransaction.commit()

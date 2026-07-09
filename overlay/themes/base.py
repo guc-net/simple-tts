@@ -175,6 +175,15 @@ class Theme:
             self._applied[key] = sprite_key
             self._updates.append((idx, "img", sprite_key))
 
+    def xf(self, idx, angle, sx=1.0, sy=1.0):
+        """Transformacja warstwy wokół środka: obrót (rad) + skala X/Y.
+        Host stosuje setAffineTransform (płynnie, bez skoków klatek)."""
+        key = ("xf", idx)
+        val = (round(angle, 3), round(sx, 3), round(sy, 3))
+        if self._applied.get(key) != val:
+            self._applied[key] = val
+            self._updates.append((idx, "xf", val))
+
     # --- kropki licznika sesji ------------------------------------------------
     def _step_pips(self, dt):
         show = self.mode in ("think", "attention")

@@ -1,5 +1,5 @@
 ---
-description: "Mute or unmute simple-tts speech, toggle Knight Rider mode (KITT siren + scanner overlay), pick the overlay theme (kitt/cylon/hal/ekg/matrix/spark), and manage the audio cache. Usage: /simple-tts:tts on|off|status|knight-rider [on|off]|theme [name]|cache [stats|prune|clear]."
+description: "Mute or unmute simple-tts speech, toggle the scanner overlay, the voice howl (siren) and distortion, pick the overlay theme (kitt/cylon/spark), and manage the audio cache. Usage: /simple-tts:tts on|off|status|knight-rider [on|off]|howl [on|off|auto]|distortion [on|off|auto]|theme [name]|cache [stats|prune|clear]."
 user_invocable: true
 ---
 
@@ -32,10 +32,10 @@ Same as above with `c['enabled'] = True`. Confirm: "TTS unmuted." You may add a 
 
 ## /tts knight-rider [on|off]   (alias: sound)
 
-Toggle **Knight Rider mode** — the `knight_rider` config key. One switch for both:
-the KITT siren bed mixed under the voice (`intro_sound`, needs `ffmpeg`) **and** the
-floating scanner overlay animation (idle scanner / thinking / speaking). `on` sets
-`true`, `off` sets `false`; no argument reports the current value. Default is on.
+Toggle the **scanner overlay** — the `knight_rider` config key. Controls only the
+floating overlay animation (idle scanner / thinking / speaking). `on` sets `true`,
+`off` sets `false`; no argument reports the current value. Default is on. (The voice
+howl and distortion are separate — see `/tts howl` and `/tts distortion`.)
 
 ```bash
 python3 -c "
@@ -50,21 +50,66 @@ print('knight_rider =', c.get('knight_rider', True))
 " ${ARG:-}
 ```
 
-Pass the user's `on`/`off` as the argument. Confirm the resulting state (e.g. "Tryb Knight Rider włączony (syrena + skaner)." / "…wyłączony."). The overlay reacts within a second; the siren applies to the next spoken line.
+Pass the user's `on`/`off` as the argument. Confirm the resulting state (e.g. "Skaner włączony." / "…wyłączony."). The overlay reacts within a second.
 
-## /tts theme [name]
+## /tts howl [on|off|auto]
 
-Pick the **overlay animation theme** — the `overlay_theme` config key. Available
-themes: `kitt` (Knight Rider scanner, default), `cylon` (Battlestar Galactica eye),
-`hal` (HAL 9000 red eye), `ekg` (heart monitor trace), `matrix` (digital rain),
-`spark` (cat-eye lens with a spark stream). The running overlay picks the change up live (within a second),
-no restart needed. No argument reports the current theme and lists the options.
+Toggle the **siren "howl"** (wyjec) mixed under the voice — the `voice_howl` config
+key (needs `ffmpeg`). Values: **`auto`** (default) = howl plays **only with the KITT
+overlay theme**, all other themes speak without it; **`on`** = always; **`off`** =
+never. Independent of the voice distortion. No argument reports the current value.
 
 ```bash
 python3 -c "
 import json, os, sys
 p = os.path.expanduser('~/.claude/simple-tts-config.json')
-themes = ('kitt', 'cylon', 'hal', 'ekg', 'matrix', 'spark')
+with open(p) as f: c = json.load(f)
+arg = (sys.argv[1] if len(sys.argv) > 1 else '').strip().lower()
+if arg in ('on','off','auto'):
+    c['voice_howl'] = arg
+    with open(p, 'w') as f: json.dump(c, f, indent=2, ensure_ascii=False)
+print('voice_howl =', c.get('voice_howl', 'auto'))
+" ${ARG:-}
+```
+
+Pass the user's argument. Confirm (e.g. "Wyjec: auto (tylko przy motywie KITT)." / "…zawsze." / "…nigdy."). Applies to the next spoken line.
+
+## /tts distortion [on|off|auto]
+
+Toggle the **voice distortion** (KITT-style −20 Hz pitch) — the `voice_distortion`
+config key. Values: **`auto`** (default) = distortion on for the KITT-family themes
+(`kitt`, `cylon`), **off for `spark`** (plain voice); **`on`** = always; **`off`** =
+never. Independent of the howl. No argument reports the current value.
+
+```bash
+python3 -c "
+import json, os, sys
+p = os.path.expanduser('~/.claude/simple-tts-config.json')
+with open(p) as f: c = json.load(f)
+arg = (sys.argv[1] if len(sys.argv) > 1 else '').strip().lower()
+if arg in ('on','off','auto'):
+    c['voice_distortion'] = arg
+    with open(p, 'w') as f: json.dump(c, f, indent=2, ensure_ascii=False)
+print('voice_distortion =', c.get('voice_distortion', 'auto'))
+" ${ARG:-}
+```
+
+Pass the user's argument. Confirm (e.g. "Zniekształcenie: auto (kitt/cylon tak, spark nie)." / "…zawsze." / "…nigdy."). Applies to the next spoken line.
+
+## /tts theme [name]
+
+Pick the **overlay animation theme** — the `overlay_theme` config key. Available
+themes: `kitt` (Knight Rider scanner, default; turns into KARR's yellow scanner
+when waiting), `cylon` (Battlestar Galactica red eye), `spark` (green cat-eye lens
+with a spark stream; splits one lens per working agent, blue when waiting). The
+running overlay picks the change up live (within a second), no restart needed. No
+argument reports the current theme and lists the options.
+
+```bash
+python3 -c "
+import json, os, sys
+p = os.path.expanduser('~/.claude/simple-tts-config.json')
+themes = ('kitt', 'cylon', 'spark')
 with open(p) as f: c = json.load(f)
 arg = (sys.argv[1] if len(sys.argv) > 1 else '').strip().lower()
 if arg:
@@ -77,7 +122,7 @@ print('overlay_theme =', c.get('overlay_theme', 'kitt'))
 ```
 
 Pass the user's theme name as the argument. Confirm the resulting theme in Polish
-(e.g. "Motyw nakładki: hal — czerwone oko HAL 9000."). Remind that the overlay
+(e.g. "Motyw nakładki: spark — zielone kocie oko."). Remind that the overlay
 itself is toggled by `knight-rider on|off` if it is currently off.
 
 ## /tts status
@@ -85,8 +130,10 @@ itself is toggled by `knight-rider on|off` if it is currently off.
 Read the config and report:
 - enabled: `enabled` key (missing key = enabled)
 - voice, rate, language
-- Knight Rider mode: `knight_rider` key (missing key = on) — siren bed + scanner overlay
+- scanner overlay: `knight_rider` key (missing key = on)
 - overlay theme: `overlay_theme` key (missing key = kitt)
+- voice howl (siren): `voice_howl` key (missing = auto — only with the KITT theme)
+- voice distortion: `voice_distortion` key (missing = auto — kitt/cylon yes, spark no)
 - quiet hours, if `quiet_hours` is set (speech is silenced between start and end)
 
 ## /tts cache [stats|prune|clear]
