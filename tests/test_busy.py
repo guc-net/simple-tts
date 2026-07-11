@@ -3,6 +3,7 @@
 import io
 import os
 import sys
+import time
 
 import pytest
 
@@ -146,3 +147,23 @@ def test_post_tool_use_hook_fast_path_skips_stdin(isolated_paths, monkeypatch):
     monkeypatch.setattr(attention_clear, "read_hook_input", _boom)
     with pytest.raises(SystemExit):
         attention_clear.main()
+
+
+def test_session_busy_fresh_true_when_recent(isolated_paths):
+    tts_utils.set_session_busy("s1", True)
+    assert tts_utils.session_busy_fresh("s1") is True
+
+
+def test_session_busy_fresh_false_when_absent(isolated_paths):
+    assert tts_utils.session_busy_fresh("nope") is False
+
+
+def test_session_busy_fresh_false_when_stale(isolated_paths):
+    tts_utils.set_session_busy("s2", True)
+    marker = isolated_paths / "busy.d" / "s2"
+    marker.write_text(str(int(time.time()) - 20 * 60))   # znacznik sprzed 20 min
+    assert tts_utils.session_busy_fresh("s2") is False
+
+
+def test_session_busy_fresh_none_session_is_false(isolated_paths):
+    assert tts_utils.session_busy_fresh(None) is False
