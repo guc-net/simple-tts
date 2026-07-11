@@ -308,6 +308,27 @@ def _busy_marker(session_id):
     return _session_marker(BUSY_DIR, session_id)
 
 
+BUSY_STALE_SECS = 15 * 60  # okno świeżości znacznika busy (jak overlay/kitt_state)
+
+
+def session_busy_fresh(session_id, max_age=BUSY_STALE_SECS):
+    """True, gdy znacznik busy tej sesji istnieje i jego timestamp jest
+    świeższy niż max_age sekund. Timestamp czytamy z treści pliku
+    (int(time.time()) zapisany przez _set_session_marker); przy pustej/
+    niepoprawnej treści wracamy do st_mtime. Fail-safe: brak pliku / dowolny
+    błąd → False (mowa zostaje włączona)."""
+    marker = _busy_marker(session_id)
+    try:
+        try:
+            with open(marker) as f:
+                ts = int(f.read().strip())
+        except (ValueError, OSError):
+            ts = int(os.stat(marker).st_mtime)
+        return (time.time() - ts) < max_age
+    except OSError:
+        return False
+
+
 def _set_session_marker(dir_path, session_id, on):
     """Postaw/zdejmij plikowy znacznik per-sesja dla nakładki. Ciche przy błędzie."""
     try:
