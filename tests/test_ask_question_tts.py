@@ -45,6 +45,17 @@ class TestBuildPhrase:
         assert len(out) <= ask_question_tts.MAX_LEN + 1     # +1 na znak …
         assert out.endswith("…")
 
+    def test_non_string_question_value_returns_none(self):
+        assert ask_question_tts.build_phrase(
+            "AskUserQuestion", {"questions": [{"question": None}]}, self.p) is None
+        assert ask_question_tts.build_phrase(
+            "AskUserQuestion", {"questions": [{"question": 5}]}, self.p) is None
+
+    def test_mixed_valid_and_non_string_questions_keeps_valid(self):
+        ti = {"questions": [{"question": None}, {"question": "Realne pytanie?"}]}
+        assert ask_question_tts.build_phrase("AskUserQuestion", ti, self.p) == \
+            "Realne pytanie?"
+
 
 def test_all_phrase_catalogs_have_same_keys():
     for lang in ("pl", "en", "de", "fr"):

@@ -45,8 +45,13 @@ def build_phrase(tool_name, tool_input, phrases):
         return phrases['plan']
     if tool_name == "AskUserQuestion":
         questions = (tool_input or {}).get("questions") or []
-        texts = [q.get("question", "").strip() for q in questions
-                 if isinstance(q, dict) and q.get("question", "").strip()]
+        texts = []
+        for q in questions:
+            if not isinstance(q, dict):
+                continue
+            qt = q.get("question", "")
+            if isinstance(qt, str) and qt.strip():
+                texts.append(qt.strip())
         if not texts:
             return None
         if len(texts) == 1:
