@@ -56,7 +56,7 @@ def build_phrase(tool_name, tool_input, phrases):
             return None
         if len(texts) == 1:
             return _truncate(texts[0])
-        return phrases['several'].format(q=_truncate(texts[0]))
+        return _truncate(phrases['several'].format(q=texts[0]))
     return None
 
 

@@ -45,6 +45,12 @@ class TestBuildPhrase:
         assert len(out) <= ask_question_tts.MAX_LEN + 1     # +1 na znak …
         assert out.endswith("…")
 
+    def test_several_phrase_bounded_to_max_len(self):
+        ti = {"questions": [{"question": "słowo " * 60}, {"question": "drugie?"}]}
+        out = ask_question_tts.build_phrase("AskUserQuestion", ti, self.p)
+        assert len(out) <= ask_question_tts.MAX_LEN + 1
+        assert out.endswith("…")
+
     def test_non_string_question_value_returns_none(self):
         assert ask_question_tts.build_phrase(
             "AskUserQuestion", {"questions": [{"question": None}]}, self.p) is None
