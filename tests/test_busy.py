@@ -167,3 +167,48 @@ def test_session_busy_fresh_false_when_stale(isolated_paths):
 
 def test_session_busy_fresh_none_session_is_false(isolated_paths):
     assert tts_utils.session_busy_fresh(None) is False
+
+
+def test_notification_suppressed_when_busy(write_config, isolated_paths, monkeypatch):
+    """Bezczynne 'waiting' w trakcie trwającej tury (świeży busy) -> cisza,
+    bez zapalania attention."""
+    write_config()
+    tts_utils.set_session_busy("sB", True)
+    import notification_tts
+    spoke = []
+    monkeypatch.setattr(notification_tts, "read_hook_input", lambda: {
+        "session_id": "sB", "message": "Claude is waiting for your input"})
+    monkeypatch.setattr(notification_tts, "speak", lambda *a, **k: spoke.append(a))
+    with pytest.raises(SystemExit):
+        notification_tts.main()
+    assert spoke == []
+    assert not (isolated_paths / "attention.d" / "sB").exists()
+
+
+def test_notification_permission_speaks_even_when_busy(write_config, isolated_paths, monkeypatch):
+    """Prośba o zgodę mówi zawsze, nawet w trakcie trwającej tury."""
+    write_config()
+    tts_utils.set_session_busy("sP", True)
+    import notification_tts
+    spoke = []
+    monkeypatch.setattr(notification_tts, "read_hook_input", lambda: {
+        "session_id": "sP", "message": "Claude needs your permission to use Bash"})
+    monkeypatch.setattr(notification_tts, "speak", lambda *a, **k: spoke.append(a))
+    with pytest.raises(SystemExit):
+        notification_tts.main()
+    assert spoke                                            # coś powiedziano
+    assert (isolated_paths / "attention.d" / "sP").exists()
+
+
+def test_notification_speaks_when_not_busy(write_config, isolated_paths, monkeypatch):
+    """Realne bezczynne czekanie (brak busy = tura się skończyła) -> mówi."""
+    write_config()
+    import notification_tts
+    spoke = []
+    monkeypatch.setattr(notification_tts, "read_hook_input", lambda: {
+        "session_id": "sN", "message": "Claude is waiting for your input"})
+    monkeypatch.setattr(notification_tts, "speak", lambda *a, **k: spoke.append(a))
+    with pytest.raises(SystemExit):
+        notification_tts.main()
+    assert spoke
+    assert (isolated_paths / "attention.d" / "sN").exists()

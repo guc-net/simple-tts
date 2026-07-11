@@ -17,6 +17,7 @@ from tts_utils import (
     language_code,
     load_config,
     read_hook_input,
+    session_busy_fresh,
     set_session_attention,
     speak,
 )
@@ -107,13 +108,24 @@ def main():
     input_data = read_hook_input()
     debug(input_data, config.get('debug', False))
 
+    session_id = input_data.get('session_id')
+    message = input_data.get('message', '')
+
+    # Prośby o zgodę mówimy zawsze (realna decyzja użytkownika). Pozostałe
+    # zdarzenia (bezczynne "waiting" itp.) w trakcie trwającej tury są fałszywe
+    # — agent nadal pracuje (np. czeka na subagentów) — więc milczymy i nie
+    # zapalamy trybu "attention" w nakładce.
+    is_permission = 'permission' in message.lower()
+    if not is_permission and session_busy_fresh(session_id):
+        sys.exit(0)
+
     # Sesja czeka na użytkownika -> tryb "attention" nakładki. Znacznik idzie
     # niezależnie od mute/quiet hours (wizual jest osobny od mowy); zdejmuje go
     # nowy prompt, wykonanie narzędzia (zgoda udzielona) albo koniec tury.
-    set_session_attention(input_data.get('session_id'), True)
+    set_session_attention(session_id, True)
 
     msgs = MESSAGES.get(language_code(config), MESSAGES['en'])
-    tts_text = translate_notification(input_data.get('message', ''), msgs)
+    tts_text = translate_notification(message, msgs)
     speak(tts_text, priority=True)
     sys.exit(0)
 
