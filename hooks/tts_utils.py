@@ -19,6 +19,12 @@ STATE_PATH = os.path.expanduser("~/.claude/simple-tts-state.json")
 # UserPromptSubmit, rm od Stop). Katalog, bo Claude może chodzić w kilku sesjach.
 BUSY_DIR = os.path.expanduser("~/.claude/simple-tts-busy.d")
 ATTENTION_DIR = os.path.expanduser("~/.claude/simple-tts-attention.d")
+# Globalna kolejka mowy: gdy TTS gra, kolejne komunikaty non-priority trafiają
+# tu zamiast być porzucane (drenowanie kolejki to zadanie speak()/edge_speak.py,
+# nie tego modułu). Jeden katalog, wiele plików-wpisów.
+QUEUE_DIR = os.path.expanduser("~/.claude/simple-tts-queue.d")
+QUEUE_TTL_SECS = 40   # wpis starszy niż to = przeterminowany, pop go pomija
+QUEUE_MAX = 8         # maks. wpisów w kolejce; nadmiar wypycha najstarsze
 USER_PHONETICS_PATH = os.path.expanduser("~/.claude/simple-tts-phonetics.json")
 PHONETICS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "phonetics")
 EDGE_SPEAK_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "edge_speak.py")
@@ -355,6 +361,105 @@ def set_session_attention(session_id, on):
     """Ustaw/zdejmij znacznik 'ta sesja czeka na użytkownika' (tryb 'attention').
     Notification -> on=True; UserPromptSubmit / PostToolUse / Stop -> on=False."""
     _set_session_marker(ATTENTION_DIR, session_id, on)
+
+
+def _queue_files():
+    """Nazwy plików kolejki, posortowane rosnąco po liczbowym prefiksie nazwy
+    (część przed pierwszym '-' jako int — tak wpisy trafiają do kolejki w
+    kolejności FIFO). Plik bez poprawnego prefiksu jest uszkodzony: usuwamy go
+    od razu i pomijamy. Brak katalogu -> pusta lista (bez wyjątku)."""
+    try:
+        names = os.listdir(QUEUE_DIR)
+    except OSError:
+        return []
+    entries = []
+    for name in names:
+        prefix = name.split('-', 1)[0]
+        try:
+            n = int(prefix)
+        except ValueError:
+            try:
+                os.remove(os.path.join(QUEUE_DIR, name))
+            except OSError:
+                pass
+            continue
+        entries.append((n, name))
+    entries.sort(key=lambda t: t[0])
+    return [name for _, name in entries]
+
+
+def _queue_enforce_limit():
+    """Usuwa najstarsze wpisy kolejki, aż zostanie QUEUE_MAX. Błędy OSError
+    per plik są połykane (kolejka jest best-effort)."""
+    names = _queue_files()
+    excess = len(names) - QUEUE_MAX
+    for name in names[:max(excess, 0)]:
+        try:
+            os.remove(os.path.join(QUEUE_DIR, name))
+        except OSError:
+            pass
+
+
+def _queue_enqueue(payload):
+    """Dokłada `payload` (gotowy payload TTS, dict) do plikowej kolejki mowy.
+    Wołana wyłącznie pod istniejącym flockiem stanu (_locked_state na
+    STATE_PATH) — kolejka sama nie ma własnego locka. Zapisuje
+    f"{time.time_ns()}-{os.getpid()}.json" z {"payload": payload,
+    "enqueued_at": time.time()}, po czym egzekwuje QUEUE_MAX. Błędy OSError są
+    połykane: kolejka jest best-effort, TTS nie może wywalić hooka."""
+    try:
+        os.makedirs(QUEUE_DIR, exist_ok=True)
+        name = f"{time.time_ns()}-{os.getpid()}.json"
+        with open(os.path.join(QUEUE_DIR, name), "w") as f:
+            json.dump({"payload": payload, "enqueued_at": time.time()}, f)
+        _queue_enforce_limit()
+    except OSError:
+        pass
+
+
+def _queue_pop():
+    """Zdejmuje z kolejki najstarszy świeży wpis. Po drodze usuwa wpisy
+    przeterminowane (enqueued_at starszy niż QUEUE_TTL_SECS) i uszkodzone (zły
+    JSON, brak kluczy) — te po prostu pomija i usuwa ich pliki. Zwraca payload
+    (dict) pierwszego świeżego wpisu, unlinkując jego plik PRZED zwróceniem:
+    wołana pod flockiem stanu (_locked_state), to gwarantuje, że wpis zostanie
+    odtworzony dokładnie raz. None, gdy kolejka jest pusta lub katalog nie
+    istnieje."""
+    for name in _queue_files():
+        path = os.path.join(QUEUE_DIR, name)
+        try:
+            with open(path) as f:
+                data = json.load(f)
+            payload = data["payload"]
+            enqueued_at = data["enqueued_at"]
+        except (OSError, ValueError, KeyError, TypeError):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            continue
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        if (time.time() - enqueued_at) >= QUEUE_TTL_SECS:
+            continue
+        return payload
+    return None
+
+
+def _queue_clear():
+    """Usuwa wszystkie wpisy kolejki. Błędy OSError per plik są połykane;
+    brak katalogu to no-op (nic do wyczyszczenia)."""
+    try:
+        names = os.listdir(QUEUE_DIR)
+    except OSError:
+        return
+    for name in names:
+        try:
+            os.remove(os.path.join(QUEUE_DIR, name))
+        except OSError:
+            pass
 
 
 def _howl_on(config):
