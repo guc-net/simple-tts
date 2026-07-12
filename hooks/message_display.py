@@ -25,12 +25,19 @@ import os
 import re
 import sys
 
-# Dark green (24-bit truecolor); falls back to nearest colour on terminals
-# without truecolor support.
+# 24-bit truecolor; falls back to nearest colour on terminals without
+# truecolor support. GREEN is used for the "ok" category AND for a tag with
+# no category at all (today's neutral tag stays green for compatibility).
 GREEN = "\x1b[38;2;0;100;0m"
+FIREBRICK = "\x1b[38;2;178;34;34m"   # err — error/blocker
+AMBER = "\x1b[38;2;204;136;0m"       # q — question/decision needed
 RESET = "\x1b[0m"
 
-TTS_TAG_RE = re.compile(r"[ \t]*<!--\s*TTS:\s*(.*?)\s*-->[ \t]*", re.DOTALL | re.IGNORECASE)
+TTS_TAG_RE = re.compile(
+    r"[ \t]*<!--\s*TTS(?:\[(ok|err|q)\])?\s*:\s*(.*?)\s*-->[ \t]*",
+    re.DOTALL | re.IGNORECASE)
+
+CATEGORY_COLORS = {"ok": GREEN, "err": FIREBRICK, "q": AMBER}
 
 
 def _mode():
@@ -44,14 +51,18 @@ def _mode():
 
 
 def render_tag(text, mode="styled"):
-    """Rewrite every <!-- TTS: msg --> marker per `mode`; collapse msg whitespace."""
+    """Rewrite every <!-- TTS[cat]: msg --> marker per `mode`; collapse msg
+    whitespace. In styled mode the 🔊 line's colour depends on the category:
+    ok/no category = green, err = firebrick, q = amber."""
     def repl(match):
-        msg = " ".join(match.group(1).split())
+        category = (match.group(1) or "").lower()
+        msg = " ".join(match.group(2).split())
         if not msg or mode == "hidden":
             return ""
         if mode == "plain":
             return f"🔊 {msg}"
-        return f"{GREEN}🔊 {msg}{RESET}"
+        color = CATEGORY_COLORS.get(category, GREEN)
+        return f"{color}🔊 {msg}{RESET}"
 
     new = TTS_TAG_RE.sub(repl, text)
     if mode == "hidden" and new != text:
@@ -62,7 +73,7 @@ def render_tag(text, mode="styled"):
 def _find_text_with_marker(node):
     """Return the first string value (depth-first) that contains the marker."""
     if isinstance(node, str):
-        return node if "<!--" in node and "TTS:" in node.upper() else None
+        return node if ("<!--" in node and "TTS" in node.upper()) else None
     if isinstance(node, dict):
         for value in node.values():
             found = _find_text_with_marker(value)
