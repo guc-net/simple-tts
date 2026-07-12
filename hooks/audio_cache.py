@@ -49,6 +49,65 @@ def cache_path(payload):
     return os.path.join(CACHE_DIR, f"{key_for(payload)}.mp3")
 
 
+def env_path_for_key(key):
+    """Ścieżka obwiedni głosu obok wpisu audio (ten sam hash frazy)."""
+    return os.path.join(CACHE_DIR, f"{key}.env.json")
+
+
+def read_env(key):
+    """(dt, env) zapisanej obwiedni dla `key`, albo None gdy brak/uszkodzona."""
+    try:
+        with open(env_path_for_key(key)) as f:
+            d = json.load(f)
+        dt, env = float(d["dt"]), d["env"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if not isinstance(env, list) or not env:
+        return None
+    return (dt, env)
+
+
+def store_env(key, dt, env):
+    """Zapisz obwiednię obok pliku audio (atomowo). Cicho pomija błędy I/O i
+    pustą obwiednię — obwiednia to tylko modulator nakładki, nie audio."""
+    if not env:
+        return
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    path = env_path_for_key(key)
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w") as f:
+            json.dump({"dt": dt, "env": env}, f)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def _unlink_env(key):
+    """Usuń plik obwiedni danego wpisu (best-effort)."""
+    try:
+        os.unlink(env_path_for_key(key))
+    except OSError:
+        pass
+
+
+def _prune_orphan_envs(live_keys):
+    """Usuń pliki obwiedni, których mp3 już nie ma na dysku (np. skasowane z
+    zewnątrz) — inaczej sieroty .env.json rosłyby bez końca."""
+    try:
+        names = os.listdir(CACHE_DIR)
+    except OSError:
+        return
+    for name in names:
+        if not name.endswith(".env.json"):
+            continue
+        if name[:-len(".env.json")] not in live_keys:
+            try:
+                os.unlink(os.path.join(CACHE_DIR, name))
+            except OSError:
+                pass
+
+
 def _index_path():
     return os.path.join(CACHE_DIR, INDEX_NAME)
 
@@ -142,6 +201,7 @@ def evict(max_bytes, now=None):
         live = {e["key"] for e in entries}
         for stale in [k for k in index if k not in live]:
             del index[stale]
+        _prune_orphan_envs(live)              # obwiednie bez mp3 (kasowane z zewnątrz)
 
         total = sum(e["size"] for e in entries)
         if total <= max_bytes:
@@ -157,6 +217,7 @@ def evict(max_bytes, now=None):
                 os.unlink(e["path"])
             except OSError:
                 continue
+            _unlink_env(e["key"])             # obwiednia znika razem z mp3
             index.pop(e["key"], None)
             freed += e["size"]
         return freed
@@ -177,14 +238,15 @@ def stats():
 
 
 def clear():
-    """Remove every cache entry (mp3s, temp files and the index)."""
+    """Remove every cache entry (mp3s, envelopes, temp files and the index)."""
     removed = 0
     try:
         names = os.listdir(CACHE_DIR)
     except OSError:
         return 0
     for name in names:
-        if name.endswith(".mp3") or name == INDEX_NAME or name.startswith(TMP_PREFIX):
+        if (name.endswith(".mp3") or name.endswith(".env.json")
+                or name == INDEX_NAME or name.startswith(TMP_PREFIX)):
             try:
                 os.unlink(os.path.join(CACHE_DIR, name))
                 removed += 1

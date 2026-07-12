@@ -92,24 +92,21 @@ def almond_sprite(side, bw, bh, ang_deg, core_col, iris_col, glow_col,
     a = math.radians(-ang_deg)
     ca, sa = math.cos(a), math.sin(a)
     core_w = bw * 0.16 + 1.0
-    half_bh = bh / 2.0
+    glow_ax = bh * 0.55                        # zasięg poświaty wzdłuż osi (gładki)
     for y in range(int(side)):
         dy = (y + 0.5) - c0
         for x in range(int(side)):
             dx = (x + 0.5) - c0
             lx = dx * ca - dy * sa             # współrzędne lokalne (oś oka)
             ly = dx * sa + dy * ca
-            vN = ly / bh + 0.5
-            if 0.0 <= vN <= 1.0:
-                env = math.sin(math.pi * vN)   # 0 na czubkach -> almond
-            else:
-                d_end = abs(ly) - half_bh
-                if d_end > bh * 0.16:
-                    continue
-                env = 0.5 * math.exp(-((d_end / (bh * 0.07)) ** 2))
-            glow = math.exp(-((lx / glow_hw) ** 2)) * env
+            # Poświata: gładki halo 2D (Gauss wzdłuż i w poprzek osi), zanika
+            # płynnie do zera. Wcześniej env był kawałkami (sin wewnątrz, exp za
+            # czubkami) i SKAKAŁ na granicy czubka z 0.5 do 0 -> cienka ciemna
+            # przerwa między halo a ciałem oka (widoczna zwłaszcza po obrocie).
+            glow = math.exp(-((lx / glow_hw) ** 2)) * math.exp(-((ly / glow_ax) ** 2))
             body = core = 0.0
-            if 0.0 <= vN <= 1.0:
+            vN = ly / bh + 0.5
+            if 0.0 <= vN <= 1.0:               # ostry kształt almonda (ciało + rdzeń)
                 halfw = (bw / 2.0) * (math.sin(math.pi * vN) ** 1.4)
                 if halfw > 0.6:
                     edge = 1.0 - min(abs(lx) / halfw, 1.0)

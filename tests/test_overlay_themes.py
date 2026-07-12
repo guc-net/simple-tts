@@ -120,3 +120,23 @@ def test_fleet_pips_hidden_in_idle(name):
     for idx, prop, val in t.step(0.05, 100.0, 0.0, snap):
         if prop == "op" and idx in t.pip_indices:
             assert val < 0.05
+
+
+@pytest.mark.parametrize("key", ["g", "g_attn", "g_attn_speak"])
+def test_spark_eye_glow_fades_without_dark_gap(key):
+    """Regresja: poświata oka spark musi zanikać GŁADKO od środka na zewnątrz.
+    Dawniej env był kawałkami (sin wewnątrz almonda, exp za czubkami) i SKAKAŁ na
+    granicy czubka z 0.5 do 0 -> cienka ciemna przerwa (alfa np. 62->1->255) między
+    halo a ciałem oka, widoczna zwłaszcza po obrocie do poziomu. W kolumnie środkowej
+    (lx=0) alfa idąc od środka ku krawędzi musi być NIEROSNĄCA — dawna przerwa dawała
+    najpierw spadek do ~0, a potem WZROST (garb), co ten test łapie."""
+    alpha = _mk("spark").sprites()[key].split()[3]     # kanał alfa oka
+    w, h = alpha.size
+    px = alpha.load()
+    cx, cy = w // 2, h // 2
+    col = [px[cx, y] for y in range(h)]
+    tol = 3                                            # luz na szum sub-pikselowy
+    for y in range(cy, 0, -1):                         # od środka ku górnej krawędzi
+        assert col[y - 1] <= col[y] + tol, (
+            f"garb poświaty ({key}) w y={y - 1}: {col[y]} -> {col[y - 1]} "
+            f"— ciemna przerwa/odcięcie zamiast gładkiego zaniku")

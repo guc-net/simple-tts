@@ -175,27 +175,47 @@ def _envelope(path):
     return env
 
 
-def _write_speak_envelope(path, lead=0.0):
-    """Policz obwiednię SAMEGO GŁOSU `path` (bez syreny) i zapisz stan mowy dla
-    nakładki. `lead` (s) dosuwa obwiednię ciszą z przodu, gdy przed głosem gra
-    intro syreny — modulator jest wtedy płaski i rusza dopiero z głosem."""
+def _compute_envelope(path):
+    """(_ENV_DT, env) obwiedni SAMEGO GŁOSU `path` przez ffmpeg. None gdy ffmpeg
+    brak, pada albo obwiednia wyszła pusta."""
     if not shutil.which('ffmpeg'):
-        return
+        return None
     try:
         env = _envelope(path)
     except Exception:
-        return
+        return None
+    return (_ENV_DT, env) if env else None
+
+
+def _write_speak_state(env, dt, lead=0.0):
+    """Zapisz stan mowy (start, dt, env) dla nakładki, atomowo. `lead` (s) dosuwa
+    obwiednię ciszą z przodu, gdy przed głosem gra intro syreny — modulator jest
+    wtedy płaski i rusza dopiero z głosem."""
     if not env:
         return
     if lead > 0:
-        env = [0.0] * int(round(lead / _ENV_DT)) + env
+        env = [0.0] * int(round(lead / dt)) + env
     try:
         tmp = SPEAK_STATE_PATH + '.tmp'
         with open(tmp, 'w') as f:
-            json.dump({'start': time.time(), 'dt': _ENV_DT, 'env': env}, f)
+            json.dump({'start': time.time(), 'dt': dt, 'env': env}, f)
         os.replace(tmp, SPEAK_STATE_PATH)
     except OSError:
         pass
+
+
+def _cached_envelope(payload, path):
+    """(dt, env) obwiedni głosu dla nakładki — z cache obok pliku audio (ten sam
+    hash frazy). Przy pudle liczona RAZ z `path` i zapisywana, więc powtórki grają
+    bez przebiegu ffmpeg. None gdy ffmpeg brak/pada."""
+    key = ac.key_for(payload)
+    cached = ac.read_env(key)
+    if cached is not None:
+        return cached
+    env = _compute_envelope(path)
+    if env is not None:
+        ac.store_env(key, env[0], env[1])
+    return env
 
 
 def _sound_path(name):
@@ -293,16 +313,22 @@ def _empty(path):
         return True
 
 
-def _play_speech(path, payload):
+def _play_speech(path, payload, env=None):
     """Play the speech, mixing in the background sound when enabled; on any mix
-    failure play the plain speech. Returns True if something played."""
+    failure play the plain speech. Returns True if something played.
+
+    `env` (dt, lista) — gotowa obwiednia (z cache edge); None => policz z `path`."""
     mixed = _mix_kitt(path, payload)
-    # Obwiednię liczymy tylko w trybie KITT (gdy nakładka jej użyje) — to samo
-    # kryterium, co syrena: intro_sound != none/absent. ZAWSZE z samego głosu
-    # (path), a gdy gra miks, dosunięta o intro syreny, żeby modulator ruszał
-    # z głosem (i był czas na przełączenie animacji podczas pierwszego wycia).
-    if payload.get('intro_sound') not in (None, 'none'):
-        _write_speak_envelope(path, _INTRO if mixed else 0.0)
+    # Obwiednia dla nakładki: liczona z SAMEGO GŁOSU (path), dla KAŻDEGO motywu,
+    # o ile nakładka jest włączona (payload['envelope']) — nie tylko w trybie
+    # KITT. Dawniej bramkowana syreną (intro_sound != none), przez co spark/cylon
+    # (bez syreny) nigdy nie dostawały obwiedni i oko pulsowało syntetycznie.
+    # Gdy gra miks, obwiednia dosunięta o intro syreny (rusza z głosem).
+    if payload.get('envelope'):
+        if env is None:
+            env = _compute_envelope(path)
+        if env is not None:
+            _write_speak_state(env[1], env[0], _INTRO if mixed else 0.0)
     if mixed:
         try:
             if _play(mixed):
@@ -364,7 +390,8 @@ def _speak_payload(payload):
         hit = False
     if hit:
         ac.record_hit(key)
-        if not _play_speech(cache_file, payload):
+        env = _cached_envelope(payload, cache_file) if payload.get('envelope') else None
+        if not _play_speech(cache_file, payload, env):
             _say(payload)
         return
 
@@ -407,7 +434,8 @@ def _speak_payload(payload):
         except OSError:
             play_path = tmp  # storing failed; still play what we synthesized
 
-        if not _play_speech(play_path, payload):
+        env = _cached_envelope(payload, play_path) if payload.get('envelope') else None
+        if not _play_speech(play_path, payload, env):
             _say(payload)
     finally:
         if tmp is not None:
