@@ -68,6 +68,10 @@ DEFAULT_CONFIG = {
     # dysku (fresh_busy_count() > 1); "on" = zawsze, gdy hook przekazał project;
     # "off" = nigdy.
     "announce_project": "auto",
+    # Czy grać krótki dźwięk (earcon) przed mową dla skategoryzowanych komunikatów
+    # (<!-- TTS[ok|err|q]: -->). Samo odtwarzanie earconu to osobny mechanizm
+    # (edge_speak.py) — tu tylko bramkujemy, czy w ogóle ma trafić do payloadu.
+    "earcons": True,
 }
 
 # Map of language names (as stored by the setup skill) to phonetic dict codes
@@ -134,9 +138,26 @@ def language_code(config):
     return LANGUAGE_CODES.get(lang, 'en')
 
 
+TTS_TAG_RE = re.compile(r'<!--\s*TTS(?:\[(ok|err|q)\])?\s*:\s*(.+?)\s*-->')
+
+
+def parse_tts_tag(text):
+    """Wyciąga (category, message) z PIERWSZEGO dopasowania znacznika TTS w
+    `text`, albo None gdy nie ma dopasowania. `category` to 'ok'/'err'/'q' albo
+    None (brak nawiasu — dzisiejsza forma, w pełni kompatybilna wstecz).
+    Nierozpoznana zawartość nawiasu (np. '[foo]') NIE dopasowuje się wcale —
+    cały tag jest wtedy traktowany jak nieistniejący (świadome, patrz testy)."""
+    match = TTS_TAG_RE.search(text)
+    if not match:
+        return None
+    return (match.group(1), match.group(2).strip())
+
+
 def extract_tts_from_transcript(transcript_path, search_lines=50):
     """
-    Extract <!-- TTS: message --> tag from the last assistant message in transcript.
+    Extract (category, message) from the <!-- TTS: message --> (or
+    <!-- TTS[ok|err|q]: message -->) tag in the last assistant message in
+    transcript. None when no tag is found.
     """
     try:
         transcript_path = os.path.expanduser(transcript_path)
@@ -151,11 +172,9 @@ def extract_tts_from_transcript(transcript_path, search_lines=50):
                     if isinstance(content, list):
                         for block in content:
                             if block.get('type') == 'text':
-                                match = re.search(
-                                    r'<!--\s*TTS:\s*(.+?)\s*-->', block.get('text', '')
-                                )
-                                if match:
-                                    return match.group(1).strip()
+                                result = parse_tts_tag(block.get('text', ''))
+                                if result:
+                                    return result
             except (json.JSONDecodeError, KeyError, TypeError):
                 continue
         return None
@@ -559,7 +578,7 @@ def _spawn(payload):
         return None
 
 
-def speak(text, priority=False, force=False, project=None):
+def speak(text, priority=False, force=False, project=None, category=None):
     """
     Speak text via the detached edge_speak.py helper. Non-blocking: the
     helper is spawned and the hook returns immediately.
@@ -576,6 +595,10 @@ def speak(text, priority=False, force=False, project=None):
     it's warranted (see announce_project config), a "<project label>: " prefix
     is prepended to `text` before sanitization, and takes precedence over the
     name prefix below for this message.
+    category=<'ok'|'err'|'q'|None>: parsed from a <!-- TTS[ok|err|q]: --> tag
+    (stop_tts.py only). When recognized and the "earcons" config allows it,
+    adds an "earcon" key to the payload — playing the sound is a separate
+    concern (edge_speak.py), this only threads the data through.
 
     Silent no-op when the plugin is not configured, muted, in quiet hours, or
     when there's nothing left to say after sanitization.
@@ -603,6 +626,7 @@ def speak(text, priority=False, force=False, project=None):
     rate = str(config.get('rate', 220))
 
     edge_voice = edge_voice_for(config) if config.get('engine') == 'edge' else None
+    earcon = category if category in ("ok", "err", "q") and config.get("earcons", True) else None
 
     if edge_voice:
         payload = {
@@ -630,6 +654,9 @@ def speak(text, priority=False, force=False, project=None):
             "say_voice": voice,
             "say_rate": rate,
         }
+
+    if earcon:
+        payload["earcon"] = earcon
 
     def cb(state):
         pid, ts = state.get('pid'), state.get('ts', 0)

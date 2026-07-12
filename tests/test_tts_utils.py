@@ -12,6 +12,7 @@ from tts_utils import (
     in_quiet_hours,
     language_code,
     load_config,
+    parse_tts_tag,
     sanitize_for_tts,
     speak,
 )
@@ -63,7 +64,7 @@ class TestExtractFromTranscript:
             {"type": "assistant", "message": {"content": [
                 {"type": "text", "text": "Done <!-- TTS: zrobione -->"}]}},
         ])
-        assert extract_tts_from_transcript(path) == "zrobione"
+        assert extract_tts_from_transcript(path) == (None, "zrobione")
 
     def test_no_tag_returns_none(self, tmp_path):
         path = self._write_transcript(tmp_path, [
@@ -80,7 +81,36 @@ class TestExtractFromTranscript:
         path.write_text('not json\n' + json.dumps(
             {"type": "assistant", "message": {"content": [
                 {"type": "text", "text": "<!-- TTS: działa -->"}]}}))
-        assert extract_tts_from_transcript(str(path)) == "działa"
+        assert extract_tts_from_transcript(str(path)) == (None, "działa")
+
+    def test_extracts_category_from_last_assistant_message(self, tmp_path):
+        path = self._write_transcript(tmp_path, [
+            {"type": "assistant", "message": {"content": [
+                {"type": "text", "text": "<!-- TTS[err]: coś nie wyszło -->"}]}},
+        ])
+        assert extract_tts_from_transcript(path) == ("err", "coś nie wyszło")
+
+
+class TestParseTtsTag:
+    def test_no_category_returns_none_category(self):
+        assert parse_tts_tag("<!-- TTS: gotowe -->") == (None, "gotowe")
+
+    @pytest.mark.parametrize("category,text", [
+        ("ok", "sukces"),
+        ("err", "sukces"),
+        ("q", "sukces"),
+    ])
+    def test_recognized_categories(self, category, text):
+        assert parse_tts_tag(f"<!-- TTS[{category}]: {text} -->") == (category, text)
+
+    def test_unrecognized_category_does_not_match(self):
+        assert parse_tts_tag("<!-- TTS[foo]: x -->") is None
+
+    def test_no_tag_returns_none(self):
+        assert parse_tts_tag("zwykły tekst") is None
+
+    def test_whitespace_variants_tolerated(self):
+        assert parse_tts_tag("<!--TTS[ok]:   gotowe  -->") == ("ok", "gotowe")
 
 
 class TestSanitizer:
@@ -308,6 +338,36 @@ class TestSpeak:
         payload = json.loads(fake_say.envs[0]["SIMPLE_TTS_PAYLOAD"])
         assert "intro_sound" not in payload
         assert "edge_pitch" not in payload
+
+    def test_earcon_set_from_category_when_enabled(self, write_config, fake_say):
+        write_config()
+        speak("gotowe", category="ok")
+        payload = json.loads(fake_say.envs[0]["SIMPLE_TTS_PAYLOAD"])
+        assert payload["earcon"] == "ok"
+
+    def test_no_category_means_no_earcon_key(self, write_config, fake_say):
+        write_config()
+        speak("gotowe", category=None)
+        payload = json.loads(fake_say.envs[0]["SIMPLE_TTS_PAYLOAD"])
+        assert "earcon" not in payload
+
+    def test_earcons_disabled_by_config(self, write_config, fake_say):
+        write_config(earcons=False)
+        speak("gotowe", category="err")
+        payload = json.loads(fake_say.envs[0]["SIMPLE_TTS_PAYLOAD"])
+        assert "earcon" not in payload
+
+    def test_unexpected_category_value_means_no_earcon(self, write_config, fake_say):
+        write_config()
+        speak("gotowe", category="bogus")
+        payload = json.loads(fake_say.envs[0]["SIMPLE_TTS_PAYLOAD"])
+        assert "earcon" not in payload
+
+    def test_earcon_set_in_say_payload_too(self, write_config, fake_say):
+        write_config(engine="say")
+        speak("gotowe", category="q")
+        payload = json.loads(fake_say.envs[0]["SIMPLE_TTS_PAYLOAD"])
+        assert payload["earcon"] == "q"
 
 
 class TestMute:
