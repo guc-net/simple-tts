@@ -487,18 +487,43 @@ def _distortion_on(config):
     return str(config.get('overlay_theme', 'spark')).strip().lower() in ('kitt', 'cylon')
 
 
+def _spawn(payload):
+    """Spawn the detached edge_speak.py helper with `payload` (dict) passed
+    through the SIMPLE_TTS_PAYLOAD env var (never appears in `ps`, survives
+    odd characters). This is the only Popen caller now — plain `say` payloads
+    (engine="say") go through the helper too, so they share its queue-drain
+    loop. Returns the new {"pid", "ts"} state on success; on (OSError,
+    FileNotFoundError) logs and returns None, leaving state untouched (per
+    _locked_state's contract: None = don't write). Must be called from inside
+    a _locked_state callback — it does not lock itself."""
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, EDGE_SPEAK_PATH],
+            start_new_session=True,
+            env={**os.environ, "SIMPLE_TTS_PAYLOAD": json.dumps(payload)},
+        )
+        return {"pid": proc.pid, "ts": time.time()}
+    except (OSError, FileNotFoundError) as e:
+        print(f"TTS error: {e}", file=sys.stderr)
+        return None
+
+
 def speak(text, priority=False, force=False):
     """
-    Speak text using macOS say with the configured voice. Non-blocking:
-    `say` is detached and the hook returns immediately.
+    Speak text via the detached edge_speak.py helper. Non-blocking: the
+    helper is spawned and the hook returns immediately.
 
-    priority=True (notification hook): kills our running say (if any), always speaks.
-    priority=False (stop hook): stays silent while a previous say is still
-    playing or finished less than 2 seconds ago.
+    priority=True (notification hook): kills our running TTS (if any), clears
+    the speech queue, and always speaks.
+    priority=False (stop hook): while a previous TTS is still playing, the
+    message is enqueued (played once the running one finishes, via the
+    helper's own drain loop) instead of being spoken now; stays silent (drops
+    the message) only in the narrower "just finished <2s ago" window.
     force=True (speak_cli test mode): bypasses mute ("enabled": false)
     and quiet hours, but still requires a config.
 
-    Silent no-op when the plugin is not configured, muted, or in quiet hours.
+    Silent no-op when the plugin is not configured, muted, in quiet hours, or
+    when there's nothing left to say after sanitization.
     """
     config = load_config()
     if config is None:
@@ -506,29 +531,9 @@ def speak(text, priority=False, force=False):
     if not force and (not config.get('enabled', True) or in_quiet_hours(config)):
         return
 
-    def check_and_kill(state):
-        pid, ts = state.get('pid'), state.get('ts', 0)
-        if priority:
-            if pid and _is_our_tts(pid):
-                # Kill the whole process group (start_new_session made the TTS
-                # process a group leader), so an edge helper's `afplay`/`say`
-                # child dies with it.
-                try:
-                    os.killpg(os.getpgid(pid), signal.SIGTERM)
-                except OSError:
-                    pass
-            return None
-        # Non-priority: bail out if still speaking or just finished
-        if (pid and _is_our_tts(pid)) or (time.time() - ts) < 2.0:
-            raise _StillSpeaking()
-        return None
-
-    try:
-        _locked_state(check_and_kill)
-    except _StillSpeaking:
-        return
-
     text = sanitize_for_tts(text, language_code(config))
+    if not text:
+        return
 
     name = config.get('name', '')
     if name and random.random() < config.get('name_chance', 0.3):
@@ -540,40 +545,56 @@ def speak(text, priority=False, force=False):
 
     edge_voice = edge_voice_for(config) if config.get('engine') == 'edge' else None
 
-    try:
-        if edge_voice:
-            # Detached helper: synthesizes via edge-tts and plays it, falling
-            # back to `say` on any failure. Text + voices go through the env so
-            # they never appear in `ps` and survive odd characters.
-            payload = json.dumps({
-                "edge_voice": edge_voice,
-                "edge_rate": str(config.get('edge_rate', '+0%')),
-                "text": text,
-                "say_voice": voice,
-                "say_rate": rate,
-                "cache_max_mb": config.get('cache_max_mb', 100),
-                # Wyjec (syrena) i zniekształcenie (pitch) są NIEZALEŻNE:
-                #  - wyjec: voice_howl auto→tylko motyw KITT / on / off,
-                #  - zniekształcenie: voice_distortion (−20 Hz), osobno.
-                "intro_sound": (config.get('intro_sound', 'kitt')
-                                if _howl_on(config) else 'none'),
-                "edge_pitch": "-20Hz" if _distortion_on(config) else "+0Hz",
-            })
-            proc = subprocess.Popen(
-                [sys.executable, EDGE_SPEAK_PATH],
-                start_new_session=True,
-                env={**os.environ, "SIMPLE_TTS_PAYLOAD": payload},
-            )
-        else:
-            proc = subprocess.Popen(['say', '-v', voice, '-r', rate, text],
-                                    start_new_session=True)
-        _locked_state(lambda state: {"pid": proc.pid, "ts": time.time()})
-    except (OSError, FileNotFoundError) as e:
-        print(f"TTS error: {e}", file=sys.stderr)
+    if edge_voice:
+        payload = {
+            "engine": "edge",
+            "edge_voice": edge_voice,
+            "edge_rate": str(config.get('edge_rate', '+0%')),
+            "text": text,
+            "say_voice": voice,
+            "say_rate": rate,
+            "cache_max_mb": config.get('cache_max_mb', 100),
+            # Wyjec (syrena) i zniekształcenie (pitch) są NIEZALEŻNE:
+            #  - wyjec: voice_howl auto→tylko motyw KITT / on / off,
+            #  - zniekształcenie: voice_distortion (−20 Hz), osobno.
+            "intro_sound": (config.get('intro_sound', 'kitt')
+                            if _howl_on(config) else 'none'),
+            "edge_pitch": "-20Hz" if _distortion_on(config) else "+0Hz",
+        }
+    else:
+        # Minimal on purpose: no intro_sound/edge_pitch, so `say` payloads
+        # play as plain voice (today's behavior), just rendered to a file and
+        # played via the helper (afplay) instead of a direct streaming `say`.
+        payload = {
+            "engine": "say",
+            "text": text,
+            "say_voice": voice,
+            "say_rate": rate,
+        }
 
+    def cb(state):
+        pid, ts = state.get('pid'), state.get('ts', 0)
+        if priority:
+            if pid and _is_our_tts(pid):
+                # Kill the whole process group (start_new_session made the TTS
+                # process a group leader), so an edge helper's `afplay`/`say`
+                # child dies with it.
+                try:
+                    os.killpg(os.getpgid(pid), signal.SIGTERM)
+                except OSError:
+                    pass
+            _queue_clear()
+            return _spawn(payload)
+        # Non-priority: still speaking -> enqueue instead of dropping.
+        if pid and _is_our_tts(pid):
+            _queue_enqueue(payload)
+            return None
+        # Just finished (<2s ago): drop, matching today's behavior.
+        if (time.time() - ts) < 2.0:
+            return None
+        return _spawn(payload)
 
-class _StillSpeaking(Exception):
-    pass
+    _locked_state(cb)
 
 
 def read_hook_input():

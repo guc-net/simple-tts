@@ -129,7 +129,14 @@ class TestSpeak:
         write_config(voice="Ewa", rate=200, engine="say")
         speak("dzień dobry")
         assert len(fake_say) == 1
-        assert fake_say[0][:5] == ["say", "-v", "Ewa", "-r", "200"]
+        assert fake_say[0][1].endswith("edge_speak.py")
+        payload = json.loads(fake_say.envs[0]["SIMPLE_TTS_PAYLOAD"])
+        assert payload == {
+            "engine": "say",
+            "text": "dzień dobry",
+            "say_voice": "Ewa",
+            "say_rate": "200",
+        }
 
     def test_edge_engine_spawns_helper_with_payload(self, write_config, fake_say):
         # Default engine is "edge": speak() spawns the edge_speak.py helper and
@@ -199,10 +206,13 @@ class TestSpeak:
 
     def test_edge_engine_falls_back_to_say_for_unmapped_language(self, write_config, fake_say):
         # A language whose code has no EDGE_VOICES entry uses the local `say`
-        # engine ("xx" passes through language_code as a 2-letter code).
+        # engine ("xx" passes through language_code as a 2-letter code), still
+        # routed through the edge_speak.py helper (payload engine="say").
         write_config(voice="Krzysztof", language="xx")
         speak("hello")
-        assert fake_say[0][0] == "say"
+        assert fake_say[0][1].endswith("edge_speak.py")
+        payload = json.loads(fake_say.envs[0]["SIMPLE_TTS_PAYLOAD"])
+        assert payload["engine"] == "say"
 
     def test_records_pid_and_timestamp(self, write_config, fake_say, isolated_paths):
         write_config()
@@ -241,6 +251,63 @@ class TestSpeak:
         speak("pilne", priority=True)
         assert (4242, 15) in killed  # SIGTERM == 15
         assert len(fake_say) == 1
+
+    def test_nonpriority_enqueues_while_speaking(self, write_config, fake_say,
+                                                  isolated_paths, monkeypatch):
+        write_config()
+        monkeypatch.setattr(tts_utils, "_is_our_tts", lambda pid: True)
+        (isolated_paths / "state.json").write_text(
+            json.dumps({"pid": 4242, "ts": time.time()}))
+        speak("w kolejce")
+        assert fake_say == []
+        payload = tts_utils._queue_pop()
+        assert payload is not None
+        assert payload["text"] == sanitize_for_tts("w kolejce", "pl")
+
+    def test_priority_clears_queue_before_speaking(self, write_config, fake_say,
+                                                    isolated_paths, monkeypatch):
+        write_config()
+        monkeypatch.setattr(tts_utils, "_is_our_tts", lambda pid: True)
+        monkeypatch.setattr(tts_utils.os, "getpgid", lambda pid: pid)
+        monkeypatch.setattr(tts_utils.os, "killpg", lambda pgid, sig: None)
+        tts_utils._queue_enqueue({"text": "stare"})
+        (isolated_paths / "state.json").write_text(
+            json.dumps({"pid": 4242, "ts": time.time()}))
+        speak("nowe", priority=True)
+        assert tts_utils._queue_pop() is None
+        assert len(fake_say) == 1
+
+    def test_failed_spawn_leaves_state_untouched(self, write_config, isolated_paths,
+                                                   monkeypatch):
+        write_config()
+        assert not (isolated_paths / "state.json").exists()
+
+        def boom(*args, **kwargs):
+            raise OSError("boom")
+
+        monkeypatch.setattr(tts_utils.subprocess, "Popen", boom)
+        speak("cokolwiek")
+        state_path = isolated_paths / "state.json"
+        if state_path.exists():
+            content = state_path.read_text().strip()
+            assert content in ("", "{}")
+
+    def test_empty_text_does_not_enqueue_or_spawn(self, write_config, fake_say,
+                                                   isolated_paths, monkeypatch):
+        write_config()
+        monkeypatch.setattr(tts_utils, "_is_our_tts", lambda pid: True)
+        (isolated_paths / "state.json").write_text(
+            json.dumps({"pid": 4242, "ts": time.time()}))
+        speak("")
+        assert fake_say == []
+        assert tts_utils._queue_pop() is None
+
+    def test_say_payload_is_minimal(self, write_config, fake_say):
+        write_config(voice="Ewa", rate=200, engine="say")
+        speak("dzień dobry")
+        payload = json.loads(fake_say.envs[0]["SIMPLE_TTS_PAYLOAD"])
+        assert "intro_sound" not in payload
+        assert "edge_pitch" not in payload
 
 
 class TestMute:
