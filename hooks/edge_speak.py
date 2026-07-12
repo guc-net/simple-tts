@@ -23,8 +23,12 @@ sound's quiet valley (see _mix_kitt) — the mix is done at playback with ffmpeg
 so the on-disk cache always holds the plain speech and the effect toggles
 instantly with config. Missing ffmpeg / sound file → the plain speech plays.
 
+When the payload carries an 'earcon' key ('ok'/'err'/'q'), a short bundled
+category sound (sounds/earcon_<cat>.mp3) plays first, blocking, before the
+speech itself — for both engines.
+
 Payload keys: edge_voice, edge_rate, edge_pitch, text, say_voice, say_rate,
-cache_max_mb, intro_sound.
+cache_max_mb, intro_sound, earcon.
 """
 
 import json
@@ -323,10 +327,27 @@ def _payload_from_env():
         return None
 
 
+def _play_earcon(payload):
+    """Zagraj krótki dźwięk kategorii (earcon) przed mową, jeśli payload ma
+    pole 'earcon' ('ok'/'err'/'q') i odpowiadający plik istnieje. Blokujące
+    (afplay ~0,3 s), żeby earcon skończył się przed pierwszym słowem. Brak
+    pola, nieznana wartość albo brak pliku -> cicho pomiń (żaden earcon nie
+    jest błędem krytycznym)."""
+    cat = payload.get('earcon')
+    if cat not in ('ok', 'err', 'q'):
+        return
+    path = _sound_path(f'earcon_{cat}')
+    if os.path.exists(path):
+        _play(path)
+
+
 def _speak_payload(payload):
     """Zsyntetyzuj (lub, dla engine='say', po prostu wypowiedz przez macOS `say`)
     i odtwórz JEDEN payload mowy. To dawna zawartość main() — wołana zarówno dla
-    payloadu z env, jak i dla każdego kolejnego wpisu zdrenowanego z kolejki."""
+    payloadu z env, jak i dla każdego kolejnego wpisu zdrenowanego z kolejki.
+    Jeśli payload niesie pole 'earcon', krótki dźwięk kategorii gra najpierw
+    (dla obu silników, edge i say)."""
+    _play_earcon(payload)
     if payload.get('engine') == 'say':
         _say(payload)
         return

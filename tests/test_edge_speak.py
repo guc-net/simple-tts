@@ -240,6 +240,103 @@ def test_speak_payload_missing_engine_key_defaults_to_edge_and_synthesizes(monke
     assert runs[1][0] == "afplay"
 
 
+# --- _play_earcon: short category sound played before speech ---------------
+
+def test_play_earcon_known_category_and_existing_file_plays_it(monkeypatch):
+    monkeypatch.setattr(edge_speak.os.path, "exists", lambda p: True)
+    calls = []
+    monkeypatch.setattr(edge_speak, "_play", lambda p: calls.append(p))
+
+    edge_speak._play_earcon({"earcon": "ok", "text": "x"})
+
+    assert len(calls) == 1
+    assert calls[0].endswith("earcon_ok.mp3")
+
+
+def test_play_earcon_missing_field_does_not_play(monkeypatch):
+    calls = []
+    monkeypatch.setattr(edge_speak, "_play", lambda p: calls.append(p))
+
+    edge_speak._play_earcon({"text": "x"})  # no "earcon" key at all
+
+    assert calls == []
+
+
+def test_play_earcon_unknown_category_does_not_play(monkeypatch):
+    calls = []
+    monkeypatch.setattr(edge_speak, "_play", lambda p: calls.append(p))
+
+    edge_speak._play_earcon({"earcon": "bogus", "text": "x"})
+
+    assert calls == []
+
+
+def test_play_earcon_missing_file_does_not_play_or_raise(monkeypatch):
+    monkeypatch.setattr(edge_speak.os.path, "exists", lambda p: False)
+    calls = []
+    monkeypatch.setattr(edge_speak, "_play", lambda p: calls.append(p))
+
+    edge_speak._play_earcon({"earcon": "err", "text": "x"})  # no exception
+
+    assert calls == []
+
+
+# --- _speak_payload: earcon plays before the speech itself ------------------
+
+def test_speak_payload_plays_earcon_before_say_speech(monkeypatch):
+    """Ordering proof: both _play and _say append to ONE shared list, so the
+    relative order of the tags shows earcon really precedes speech."""
+    calls = []
+    monkeypatch.setattr(edge_speak.os.path, "exists", lambda p: True)
+    monkeypatch.setattr(edge_speak, "_play", lambda p: calls.append(("play", p)))
+    monkeypatch.setattr(edge_speak, "_say", lambda p: calls.append(("say", p)))
+
+    payload = {"engine": "say", "earcon": "ok", "text": "x",
+               "say_voice": "Krzysztof", "say_rate": "220"}
+    edge_speak._speak_payload(payload)
+
+    assert [tag for tag, _ in calls] == ["play", "say"]  # earcon before speech
+    assert calls[0][1].endswith("earcon_ok.mp3")
+    assert calls[1][1] == payload
+
+
+def _say_writes_fake_aiff(args, **kw):
+    """Fake `say -o <tmp>` that actually writes bytes, so _say's real pipeline
+    (_say_to_file -> _play_speech -> _play) runs to completion."""
+    if args[0] == "say" and "-o" in args:
+        out = args[args.index("-o") + 1]
+        with open(out, "wb") as f:
+            f.write(b"FAKEAIFF")
+    return FakeCompleted(0)
+
+
+def test_speak_payload_without_earcon_never_plays_an_earcon_file(monkeypatch):
+    """No 'earcon' key -> today's path. _say is NOT mocked here (unlike the
+    ordering test above) so its real pipeline calls the real _play with the
+    synthesized speech file — we must check the SPECIFIC argument rather than
+    a bare call count, since _play legitimately fires for the speech itself."""
+    play_calls = []
+    monkeypatch.setattr(edge_speak, "_play", lambda p: play_calls.append(p) or True)
+    monkeypatch.setattr(edge_speak.subprocess, "run", _say_writes_fake_aiff)
+
+    payload = {"engine": "say", "text": "x",
+               "say_voice": "Krzysztof", "say_rate": "220"}
+    edge_speak._speak_payload(payload)
+
+    assert play_calls  # sanity: the speech itself did play
+    assert not any(p.endswith(("earcon_ok.mp3", "earcon_err.mp3", "earcon_q.mp3"))
+                   for p in play_calls)
+
+
+# --- earcon sound files: committed repo artifacts ---------------------------
+
+def test_earcon_sound_files_exist_and_are_non_empty():
+    for cat in ("ok", "err", "q"):
+        path = edge_speak._sound_path(f"earcon_{cat}")
+        assert os.path.exists(path), path
+        assert os.path.getsize(path) > 0
+
+
 # --- main(): thin wrapper around _speak_payload + _drain_loop --------------
 
 def test_main_calls_speak_payload_then_drain_loop(monkeypatch):
