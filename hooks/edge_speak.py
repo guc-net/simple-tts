@@ -426,13 +426,19 @@ def _drain_step():
 def _drain_loop():
     """Po odtworzeniu payloadu z env, dogrywa kolejno wszystko, co czeka w
     kolejce mowy, aż będzie pusto (albo aż stan przestanie należeć do nas —
-    patrz _drain_step). 0.4 s oddechu między komunikatami."""
+    patrz _drain_step). 0.4 s oddechu między komunikatami. Jeden zepsuty wpis
+    kolejki (np. brakujący klucz payloadu) nie może przerwać drenowania reszty
+    — błąd trafia na stderr, pętla leci dalej."""
     while True:
         step = _drain_step()
         if step.get("stop"):
             return
         time.sleep(0.4)
-        _speak_payload(step["payload"])
+        try:
+            _speak_payload(step["payload"])
+        except Exception as e:
+            print(f"edge_speak drain: skipping bad queued payload: {e}",
+                  file=sys.stderr)
 
 
 def main():

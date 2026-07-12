@@ -47,7 +47,7 @@ def _patch_common(monkeypatch, tmp_path, runner):
     return runs
 
 
-def test_synthesizes_then_plays(monkeypatch, tmp_path):
+def test_synthesizes_then_plays(monkeypatch, tmp_path, isolated_paths):
     runs = _patch_common(monkeypatch, tmp_path, _synth_ok)
     edge_speak.main()
     assert runs[0][:2] == ["uvx", "edge-tts"]
@@ -55,7 +55,7 @@ def test_synthesizes_then_plays(monkeypatch, tmp_path):
     assert runs[1][0] == "afplay"  # plays the result, no say fallback
 
 
-def test_stores_in_cache_by_checksum(monkeypatch, tmp_path):
+def test_stores_in_cache_by_checksum(monkeypatch, tmp_path, isolated_paths):
     _patch_common(monkeypatch, tmp_path, _synth_ok)
     edge_speak.main()
     cache_file = ac.cache_path(_payload())
@@ -65,7 +65,7 @@ def test_stores_in_cache_by_checksum(monkeypatch, tmp_path):
     assert ac.stats()["entries"][0]["plays"] == 1
 
 
-def test_cache_hit_skips_synthesis(monkeypatch, tmp_path):
+def test_cache_hit_skips_synthesis(monkeypatch, tmp_path, isolated_paths):
     runs = _patch_common(monkeypatch, tmp_path, _synth_ok)
     cache_file = ac.cache_path(_payload())
     os.makedirs(os.path.dirname(cache_file), exist_ok=True)
@@ -78,7 +78,7 @@ def test_cache_hit_skips_synthesis(monkeypatch, tmp_path):
     assert runs[0] == ["afplay", cache_file]  # plays straight from cache
 
 
-def test_second_identical_call_uses_cache_and_counts_plays(monkeypatch, tmp_path):
+def test_second_identical_call_uses_cache_and_counts_plays(monkeypatch, tmp_path, isolated_paths):
     runs = _patch_common(monkeypatch, tmp_path, _synth_ok)
     edge_speak.main()
     edge_speak.main()
@@ -87,7 +87,7 @@ def test_second_identical_call_uses_cache_and_counts_plays(monkeypatch, tmp_path
     assert ac.stats()["entries"][0]["plays"] == 2  # both uses counted
 
 
-def test_falls_back_to_say_when_uvx_missing(monkeypatch, tmp_path):
+def test_falls_back_to_say_when_uvx_missing(monkeypatch, tmp_path, isolated_paths):
     def runner(args, **kw):
         if args[:2] == ["uvx", "edge-tts"]:
             raise FileNotFoundError("uvx")
@@ -99,7 +99,7 @@ def test_falls_back_to_say_when_uvx_missing(monkeypatch, tmp_path):
     assert "dzień dobry" in runs[-1]
 
 
-def test_falls_back_to_say_on_timeout(monkeypatch, tmp_path):
+def test_falls_back_to_say_on_timeout(monkeypatch, tmp_path, isolated_paths):
     def runner(args, **kw):
         if args[:2] == ["uvx", "edge-tts"]:
             raise edge_speak.subprocess.TimeoutExpired(cmd="edge-tts", timeout=30)
@@ -110,14 +110,14 @@ def test_falls_back_to_say_on_timeout(monkeypatch, tmp_path):
     assert runs[-1][0] == "say"
 
 
-def test_falls_back_to_say_on_nonzero_synth(monkeypatch, tmp_path):
+def test_falls_back_to_say_on_nonzero_synth(monkeypatch, tmp_path, isolated_paths):
     runs = _patch_common(monkeypatch, tmp_path, lambda args, **kw: FakeCompleted(1))
     edge_speak.main()
     assert runs[-1][0] == "say"  # synthesis failed → no afplay, say instead
     assert not any(r[0] == "afplay" for r in runs)
 
 
-def test_failed_synth_leaves_no_temp_file(monkeypatch, tmp_path):
+def test_failed_synth_leaves_no_temp_file(monkeypatch, tmp_path, isolated_paths):
     _patch_common(monkeypatch, tmp_path, lambda args, **kw: FakeCompleted(1))
     edge_speak.main()
     leftovers = [n for n in os.listdir(ac.CACHE_DIR)
@@ -141,7 +141,7 @@ def _synth_and_mix(args, **kw):
     return FakeCompleted(0)
 
 
-def test_intro_sound_mixes_kitt_and_plays_the_mix(monkeypatch, tmp_path):
+def test_intro_sound_mixes_kitt_and_plays_the_mix(monkeypatch, tmp_path, isolated_paths):
     monkeypatch.setattr(edge_speak.shutil, "which", lambda _: "/usr/bin/x")
     runs = _patch_common(monkeypatch, tmp_path, _synth_and_mix)
     monkeypatch.setenv("SIMPLE_TTS_PAYLOAD",
@@ -156,7 +156,7 @@ def test_intro_sound_mixes_kitt_and_plays_the_mix(monkeypatch, tmp_path):
         assert f.read() == b"ID3fake-audio"
 
 
-def test_mix_failure_falls_back_to_plain_speech(monkeypatch, tmp_path):
+def test_mix_failure_falls_back_to_plain_speech(monkeypatch, tmp_path, isolated_paths):
     monkeypatch.setattr(edge_speak.shutil, "which", lambda _: "/usr/bin/x")
 
     def runner(args, **kw):
@@ -173,7 +173,7 @@ def test_mix_failure_falls_back_to_plain_speech(monkeypatch, tmp_path):
     assert afplay[1] == ac.cache_path(_payload())  # plain speech, no say fallback
 
 
-def test_intro_sound_none_skips_mixing(monkeypatch, tmp_path):
+def test_intro_sound_none_skips_mixing(monkeypatch, tmp_path, isolated_paths):
     monkeypatch.setattr(edge_speak.shutil, "which", lambda _: "/usr/bin/x")
     runs = _patch_common(monkeypatch, tmp_path, _synth_and_mix)
     monkeypatch.setenv("SIMPLE_TTS_PAYLOAD",
@@ -202,10 +202,18 @@ def test_speak_payload_say_engine_calls_say_and_skips_uvx(monkeypatch, tmp_path)
     monkeypatch.setattr(edge_speak.subprocess, "run", fail_run)
     monkeypatch.setattr(ac, "CACHE_DIR", str(tmp_path / "audiocache"))
 
+    key_for_calls = []
+    cache_path_calls = []
+    monkeypatch.setattr(ac, "key_for", lambda p: key_for_calls.append(p))
+    monkeypatch.setattr(ac, "cache_path", lambda p: cache_path_calls.append(p))
+
     payload = _payload(engine="say")
     edge_speak._speak_payload(payload)
 
     assert calls == [payload]
+    # engine='say' must bypass the cache entirely, not just skip synthesis
+    assert key_for_calls == []
+    assert cache_path_calls == []
 
 
 # --- _speak_payload: engine='edge' (or missing) behaves like the old main() -
@@ -335,3 +343,29 @@ def test_drain_loop_speaks_all_queued_entries_in_fifo_order_then_stops(isolated_
     assert list((isolated_paths / "queue.d").iterdir()) == []  # drained, no leftovers
     state = tu._locked_state(lambda s: None)
     assert "pid" not in state  # loop left the idle state behind, not our own pid
+
+
+def test_drain_loop_skips_bad_queued_payload_and_keeps_draining(isolated_paths, monkeypatch):
+    """A malformed/raising queued payload must not abort the drain — the
+    remaining queue entries still get spoken."""
+    monkeypatch.setattr(edge_speak.time, "sleep", lambda s: None)
+    calls = []
+
+    def fake_speak(p):
+        if p["text"] == "zly":
+            raise KeyError("boom")
+        calls.append(p)
+
+    monkeypatch.setattr(edge_speak, "_speak_payload", fake_speak)
+
+    tu._locked_state(lambda s: {"pid": os.getpid(), "ts": time.time()})
+    tu._queue_enqueue({"text": "zly"})
+    time.sleep(0.001)
+    tu._queue_enqueue({"text": "dobry"})
+
+    edge_speak._drain_loop()
+
+    assert calls == [{"text": "dobry"}]  # bad entry skipped, good one still spoken
+    assert list((isolated_paths / "queue.d").iterdir()) == []  # fully drained
+    state = tu._locked_state(lambda s: None)
+    assert "pid" not in state
