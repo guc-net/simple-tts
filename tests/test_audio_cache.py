@@ -98,3 +98,58 @@ def test_clear_empties_everything():
     ac.clear()
     assert _keys_on_disk() == []
     assert ac.stats()["count"] == 0
+
+
+# --- obwiednia głosu składowana obok pliku audio ---------------------------
+
+def _env_files():
+    return sorted(n for n in os.listdir(ac.CACHE_DIR) if n.endswith(".env.json"))
+
+
+def test_store_and_read_env_roundtrip():
+    ac.store_env("k", 0.04, [0.1, 0.9, 0.4])
+    assert ac.read_env("k") == (0.04, [0.1, 0.9, 0.4])
+
+
+def test_read_env_missing_returns_none():
+    assert ac.read_env("nieistnieje") is None
+
+
+def test_store_env_ignores_empty_envelope():
+    ac.store_env("k", 0.04, [])
+    assert ac.read_env("k") is None
+    assert _env_files() == []
+
+
+def test_env_file_is_not_counted_as_cache_entry():
+    _make("k", 100, plays=1, last_used=1000)
+    ac.store_env("k", 0.04, [0.2, 0.7])
+    # .env.json obok .mp3 nie może udawać osobnego wpisu w cache
+    assert ac.stats()["count"] == 1
+    assert _keys_on_disk() == ["k"]
+
+
+def test_evict_removes_matching_env_file():
+    _make("hot", 100, plays=5, last_used=1000)
+    _make("cold", 100, plays=1, last_used=1000)
+    ac.store_env("hot", 0.04, [0.5])
+    ac.store_env("cold", 0.04, [0.5])
+    ac.evict(100)  # usuwa "cold"
+    assert _keys_on_disk() == ["hot"]
+    assert _env_files() == ["hot.env.json"]  # obwiednia usuniętego mp3 też znika
+
+
+def test_evict_prunes_orphan_env_without_mp3():
+    _make("live", 100, plays=1, last_used=1000)
+    ac.store_env("live", 0.04, [0.5])
+    ac.store_env("ghost", 0.04, [0.5])  # obwiednia bez mp3 (skasowane z zewnątrz)
+    ac.evict(1024 * 1024)  # pod budżetem, ale sierotę i tak sprząta
+    assert _env_files() == ["live.env.json"]
+
+
+def test_clear_removes_env_files():
+    _make("k", 100, plays=1, last_used=1000)
+    ac.store_env("k", 0.04, [0.5])
+    ac.clear()
+    assert _env_files() == []
+    assert _keys_on_disk() == []

@@ -659,16 +659,21 @@ def speak(text, priority=False, force=False, project=None, category=None,
             "intro_sound": (config.get('intro_sound', 'kitt')
                             if _howl_on(config) else 'none'),
             "edge_pitch": "-20Hz" if _distortion_on(config) else "+0Hz",
+            # Nakładka włączona -> licz obwiednię głosu (modulator „mówiącego" oka)
+            # dla KAŻDEGO motywu, nie tylko KITT; wyłączona -> pomiń przebieg ffmpeg.
+            "envelope": bool(config.get('knight_rider', True)),
         }
     else:
-        # Minimal on purpose: no intro_sound/edge_pitch, so `say` payloads
-        # play as plain voice (today's behavior), just rendered to a file and
-        # played via the helper (afplay) instead of a direct streaming `say`.
+        # Minimal on purpose: no intro_sound/edge_pitch, so `say` payloads play
+        # as plain voice (today's behavior), just rendered to a file and played
+        # via the helper (afplay) instead of a direct streaming `say`. `envelope`
+        # still rides along so `say` also drives the overlay when it's enabled.
         payload = {
             "engine": "say",
             "text": text,
             "say_voice": voice,
             "say_rate": rate,
+            "envelope": bool(config.get('knight_rider', True)),
         }
 
     if earcon:

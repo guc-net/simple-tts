@@ -166,6 +166,7 @@ class TestSpeak:
             "text": "dzień dobry",
             "say_voice": "Ewa",
             "say_rate": "200",
+            "envelope": True,   # nakładka domyślnie włączona -> obwiednia liczona
         }
 
     def test_edge_engine_spawns_helper_with_payload(self, write_config, fake_say):
@@ -227,6 +228,22 @@ class TestSpeak:
         p = self._payload(fake_say, overlay_theme="kitt", voice_distortion=False)
         assert p["edge_pitch"] == "+0Hz"
         assert p["intro_sound"] == "kitt"           # wyjec dalej gra
+
+    def test_envelope_flag_follows_overlay_on_all_themes(self, write_config, fake_say):
+        self._write = write_config
+        # nakładka domyślnie włączona -> obwiednia liczona nawet dla spark (bez syreny)
+        assert self._payload(fake_say, overlay_theme="spark")["envelope"] is True
+
+    def test_envelope_flag_off_when_overlay_disabled(self, write_config, fake_say):
+        self._write = write_config
+        # nakładka wyłączona -> pomiń liczenie obwiedni (żadna animacja jej nie użyje)
+        assert self._payload(fake_say, knight_rider=False)["envelope"] is False
+
+    def test_say_payload_also_carries_envelope_flag(self, write_config, fake_say):
+        write_config(voice="Ewa", engine="say")
+        speak("dzień dobry")
+        payload = json.loads(fake_say.envs[0]["SIMPLE_TTS_PAYLOAD"])
+        assert payload["envelope"] is True   # say też steruje nakładką, gdy włączona
 
     def test_edge_engine_picks_female_voice_for_female_local_voice(self, write_config, fake_say):
         write_config(voice="Ewa", language="Polish")
