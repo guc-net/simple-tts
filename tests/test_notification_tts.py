@@ -1,5 +1,6 @@
 """Tests for the Notification hook: tool extraction and message translation."""
 
+import notification_tts
 import pytest
 from notification_tts import MESSAGES, extract_tool, translate_notification
 
@@ -53,3 +54,26 @@ class TestTranslateNotification:
     @pytest.mark.parametrize("lang", ["pl", "en", "de", "fr"])
     def test_all_catalogs_have_same_keys(self, lang):
         assert set(MESSAGES[lang]) == set(MESSAGES["en"])
+
+
+def test_hook_passes_project_from_cwd(write_config, monkeypatch):
+    write_config()
+    spoken = []
+    monkeypatch.setattr(notification_tts, "read_hook_input", lambda: {
+        "session_id": "sY", "message": "Claude needs your permission to use Bash",
+        "cwd": "/Users/x/src/moj-projekt"})
+    monkeypatch.setattr(notification_tts, "speak", lambda *a, **k: spoken.append((a, k)))
+    with pytest.raises(SystemExit):
+        notification_tts.main()
+    assert spoken[0][1].get("project") == "moj-projekt"
+
+
+def test_hook_passes_project_none_without_cwd(write_config, monkeypatch):
+    write_config()
+    spoken = []
+    monkeypatch.setattr(notification_tts, "read_hook_input", lambda: {
+        "session_id": "sY", "message": "Claude needs your permission to use Bash"})
+    monkeypatch.setattr(notification_tts, "speak", lambda *a, **k: spoken.append((a, k)))
+    with pytest.raises(SystemExit):
+        notification_tts.main()
+    assert spoken[0][1].get("project") is None

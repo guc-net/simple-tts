@@ -63,6 +63,11 @@ DEFAULT_CONFIG = {
     # Overlay animation theme: kitt | cylon | spark.
     # Unknown values fall back to "spark". Switchable live (/tts theme <name>).
     "overlay_theme": "spark",
+    # Prefiks nazwy projektu przed komunikatem (z basename cwd hooka), np.
+    # "Simple tts: gotowe". "auto" = tylko gdy widać ślad >1 pracującej sesji na
+    # dysku (fresh_busy_count() > 1); "on" = zawsze, gdy hook przekazał project;
+    # "off" = nigdy.
+    "announce_project": "auto",
 }
 
 # Map of language names (as stored by the setup skill) to phonetic dict codes
@@ -335,6 +340,30 @@ def session_busy_fresh(session_id, max_age=BUSY_STALE_SECS):
         return False
 
 
+def fresh_busy_count():
+    """Liczba znaczników busy (dowolnych sesji) świeższych niż BUSY_STALE_SECS,
+    licząc TERAZ na dysku — bez rozróżniania, czyje są. Błędy/brak katalogu -> 0."""
+    try:
+        names = os.listdir(BUSY_DIR)
+    except OSError:
+        return 0
+    now = time.time()
+    count = 0
+    for name in names:
+        marker = os.path.join(BUSY_DIR, name)
+        try:
+            try:
+                with open(marker) as f:
+                    ts = int(f.read().strip())
+            except (ValueError, OSError):
+                ts = int(os.stat(marker).st_mtime)
+        except OSError:
+            continue
+        if (now - ts) < BUSY_STALE_SECS:
+            count += 1
+    return count
+
+
 def _set_session_marker(dir_path, session_id, on):
     """Postaw/zdejmij plikowy znacznik per-sesja dla nakładki. Ciche przy błędzie."""
     try:
@@ -487,6 +516,28 @@ def _distortion_on(config):
     return str(config.get('overlay_theme', 'spark')).strip().lower() in ('kitt', 'cylon')
 
 
+def _project_label(project):
+    """cwd-basename -> etykieta do wypowiedzenia: separatory '-_.' na spacje,
+    otoczone spacje sprzątnięte. None/pusty -> None."""
+    if not project:
+        return None
+    label = re.sub(r'[-_.]+', ' ', project).strip()
+    return label or None
+
+
+def _should_announce_project(config, project):
+    """Czy doklejić prefiks projektu dla TEGO komunikatu, wg announce_project
+    (auto|on|off) i fresh_busy_count(). Brak `project` -> zawsze False."""
+    if not project:
+        return False
+    mode = str(config.get('announce_project', 'auto')).strip().lower()
+    if mode == 'off':
+        return False
+    if mode == 'on':
+        return True
+    return fresh_busy_count() > 1
+
+
 def _spawn(payload):
     """Spawn the detached edge_speak.py helper with `payload` (dict) passed
     through the SIMPLE_TTS_PAYLOAD env var (never appears in `ps`, survives
@@ -508,7 +559,7 @@ def _spawn(payload):
         return None
 
 
-def speak(text, priority=False, force=False):
+def speak(text, priority=False, force=False, project=None):
     """
     Speak text via the detached edge_speak.py helper. Non-blocking: the
     helper is spawned and the hook returns immediately.
@@ -521,6 +572,10 @@ def speak(text, priority=False, force=False):
     the message) only in the narrower "just finished <2s ago" window.
     force=True (speak_cli test mode): bypasses mute ("enabled": false)
     and quiet hours, but still requires a config.
+    project=<basename of hook cwd>: when _should_announce_project() decides
+    it's warranted (see announce_project config), a "<project label>: " prefix
+    is prepended to `text` before sanitization, and takes precedence over the
+    name prefix below for this message.
 
     Silent no-op when the plugin is not configured, muted, in quiet hours, or
     when there's nothing left to say after sanitization.
@@ -531,12 +586,16 @@ def speak(text, priority=False, force=False):
     if not force and (not config.get('enabled', True) or in_quiet_hours(config)):
         return
 
+    project_prefixed = bool(_should_announce_project(config, project))
+    if project_prefixed:
+        text = f"{_project_label(project)}: {text}"
+
     text = sanitize_for_tts(text, language_code(config))
     if not text:
         return
 
     name = config.get('name', '')
-    if name and random.random() < config.get('name_chance', 0.3):
+    if not project_prefixed and name and random.random() < config.get('name_chance', 0.3):
         if not text.lower().startswith(name.lower()):
             text = f"{name}, {text[0].lower() + text[1:]}" if len(text) > 1 else f"{name}, {text}"
 

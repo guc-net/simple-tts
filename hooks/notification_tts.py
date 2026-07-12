@@ -126,7 +126,8 @@ def main():
 
     msgs = MESSAGES.get(language_code(config), MESSAGES['en'])
     tts_text = translate_notification(message, msgs)
-    speak(tts_text, priority=True)
+    speak(tts_text, priority=True,
+          project=os.path.basename(input_data.get('cwd') or '') or None)
     sys.exit(0)
 
 

@@ -332,6 +332,100 @@ class TestMute:
         assert len(fake_say) == 1
 
 
+class TestProjectAnnounce:
+    def _payload(self, fake_say):
+        return json.loads(fake_say.envs[0]["SIMPLE_TTS_PAYLOAD"])
+
+    def test_no_project_no_prefix_regardless_of_mode(self, write_config, fake_say):
+        write_config(announce_project="on")
+        speak("gotowe", project=None)
+        assert self._payload(fake_say)["text"] == sanitize_for_tts("gotowe", "pl")
+
+    def test_mode_on_forces_prefix_even_with_no_other_sessions(self, write_config, fake_say):
+        write_config(announce_project="on")
+        label = tts_utils._project_label("simple-tts")
+        speak("testy przeszły", project="simple-tts")
+        expected = sanitize_for_tts(f"{label}: testy przeszły", "pl")
+        assert self._payload(fake_say)["text"] == expected
+
+    def test_mode_auto_no_prefix_when_only_one_fresh_session(self, write_config,
+                                                              fake_say, monkeypatch):
+        write_config(announce_project="auto")
+        monkeypatch.setattr(tts_utils, "fresh_busy_count", lambda: 1)
+        speak("gotowe", project="simple-tts")
+        assert self._payload(fake_say)["text"] == sanitize_for_tts("gotowe", "pl")
+
+    def test_mode_auto_prefix_when_multiple_fresh_sessions(self, write_config,
+                                                            fake_say, monkeypatch):
+        write_config(announce_project="auto")
+        monkeypatch.setattr(tts_utils, "fresh_busy_count", lambda: 2)
+        label = tts_utils._project_label("simple-tts")
+        speak("gotowe", project="simple-tts")
+        expected = sanitize_for_tts(f"{label}: gotowe", "pl")
+        assert self._payload(fake_say)["text"] == expected
+
+    def test_mode_off_beats_auto_even_with_real_busy_markers(self, write_config,
+                                                              fake_say, isolated_paths):
+        write_config(announce_project="off")
+        tts_utils.set_session_busy("s1", True)
+        tts_utils.set_session_busy("s2", True)
+        speak("gotowe", project="simple-tts")
+        assert self._payload(fake_say)["text"] == sanitize_for_tts("gotowe", "pl")
+
+    def test_project_prefix_excludes_name_prefix(self, write_config, fake_say):
+        write_config(name="Adam", name_chance=1.0, announce_project="on")
+        speak("cześć", project="proj")
+        payload_text = self._payload(fake_say)["text"]
+        assert not payload_text.lower().startswith("adam")
+        label = tts_utils._project_label("proj")
+        assert payload_text.startswith(sanitize_for_tts(label, "pl"))
+
+    def test_name_prefix_still_works_without_project(self, write_config, fake_say):
+        write_config(name="Adam", name_chance=1.0, announce_project="on")
+        speak("cześć", project=None)
+        payload_text = self._payload(fake_say)["text"]
+        assert payload_text.lower().startswith("adam")
+
+
+class TestProjectLabel:
+    def test_separators_become_spaces(self):
+        assert tts_utils._project_label("simple-tts.local_test") == \
+            "simple tts local test"
+
+    def test_none_is_none(self):
+        assert tts_utils._project_label(None) is None
+
+    def test_empty_is_none(self):
+        assert tts_utils._project_label("") is None
+
+
+class TestShouldAnnounceProject:
+    def test_no_project_always_false(self, write_config, monkeypatch):
+        monkeypatch.setattr(tts_utils, "fresh_busy_count", lambda: 5)
+        assert tts_utils._should_announce_project({"announce_project": "on"}, None) is False
+        assert tts_utils._should_announce_project({"announce_project": "auto"}, "") is False
+
+    def test_mode_off(self, monkeypatch):
+        monkeypatch.setattr(tts_utils, "fresh_busy_count", lambda: 5)
+        assert tts_utils._should_announce_project(
+            {"announce_project": "off"}, "proj") is False
+
+    def test_mode_on(self, monkeypatch):
+        monkeypatch.setattr(tts_utils, "fresh_busy_count", lambda: 0)
+        assert tts_utils._should_announce_project(
+            {"announce_project": "on"}, "proj") is True
+
+    def test_mode_auto_below_threshold(self, monkeypatch):
+        monkeypatch.setattr(tts_utils, "fresh_busy_count", lambda: 1)
+        assert tts_utils._should_announce_project(
+            {"announce_project": "auto"}, "proj") is False
+
+    def test_mode_auto_above_threshold(self, monkeypatch):
+        monkeypatch.setattr(tts_utils, "fresh_busy_count", lambda: 2)
+        assert tts_utils._should_announce_project(
+            {"announce_project": "auto"}, "proj") is True
+
+
 class TestQuietHours:
     def _config(self, start, end):
         return {"quiet_hours": {"start": start, "end": end}}

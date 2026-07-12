@@ -66,7 +66,7 @@ def main():
         tts_text = config.get('fallback_message')
 
     if tts_text:
-        speak(tts_text)
+        speak(tts_text, project=os.path.basename(input_data.get('cwd') or '') or None)
 
     sys.exit(0)
 

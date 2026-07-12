@@ -74,7 +74,8 @@ def main():
 
     # Realne pytanie -> sesja czeka na użytkownika (tryb attention nakładki).
     set_session_attention(input_data.get("session_id"), True)
-    speak(text, priority=True)   # speak() sam sanitizuje tekst
+    speak(text, priority=True,   # speak() sam sanitizuje tekst
+          project=os.path.basename(input_data.get("cwd") or '') or None)
     sys.exit(0)
 
 

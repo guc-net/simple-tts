@@ -1,5 +1,7 @@
 """Tests for the Stop hook: tag extraction from the message string."""
 
+import pytest
+import stop_tts
 from stop_tts import extract_tts_from_message
 
 
@@ -21,3 +23,26 @@ class TestExtractFromMessage:
     def test_polish_diacritics_preserved(self):
         msg = "<!-- TTS: skończyłem migrację bazy -->"
         assert extract_tts_from_message(msg) == "skończyłem migrację bazy"
+
+
+def test_hook_passes_project_from_cwd(write_config, monkeypatch):
+    write_config()
+    spoken = []
+    monkeypatch.setattr(stop_tts, "read_hook_input", lambda: {
+        "session_id": "sX", "last_assistant_message": "<!-- TTS: gotowe -->",
+        "cwd": "/Users/x/src/moj-projekt"})
+    monkeypatch.setattr(stop_tts, "speak", lambda *a, **k: spoken.append((a, k)))
+    with pytest.raises(SystemExit):
+        stop_tts.main()
+    assert spoken[0][1].get("project") == "moj-projekt"
+
+
+def test_hook_passes_project_none_without_cwd(write_config, monkeypatch):
+    write_config()
+    spoken = []
+    monkeypatch.setattr(stop_tts, "read_hook_input", lambda: {
+        "session_id": "sX", "last_assistant_message": "<!-- TTS: gotowe -->"})
+    monkeypatch.setattr(stop_tts, "speak", lambda *a, **k: spoken.append((a, k)))
+    with pytest.raises(SystemExit):
+        stop_tts.main()
+    assert spoken[0][1].get("project") is None
