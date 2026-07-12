@@ -71,7 +71,7 @@ def main():
 
     if tts_text:
         speak(tts_text, project=os.path.basename(input_data.get('cwd') or '') or None,
-              category=category)
+              category=category, session_id=input_data.get('session_id'))
 
     sys.exit(0)
 

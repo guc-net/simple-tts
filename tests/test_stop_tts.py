@@ -52,6 +52,17 @@ def test_hook_passes_project_none_without_cwd(write_config, monkeypatch):
     assert spoken[0][1].get("project") is None
 
 
+def test_hook_passes_session_id(write_config, monkeypatch):
+    write_config()
+    spoken = []
+    monkeypatch.setattr(stop_tts, "read_hook_input", lambda: {
+        "session_id": "sX", "last_assistant_message": "<!-- TTS: gotowe -->"})
+    monkeypatch.setattr(stop_tts, "speak", lambda *a, **k: spoken.append((a, k)))
+    with pytest.raises(SystemExit):
+        stop_tts.main()
+    assert spoken[0][1].get("session_id") == "sX"
+
+
 def test_hook_passes_category_from_tag(write_config, monkeypatch):
     write_config()
     spoken = []

@@ -408,19 +408,32 @@ class TestProjectAnnounce:
         expected = sanitize_for_tts(f"{label}: testy przeszły", "pl")
         assert self._payload(fake_say)["text"] == expected
 
-    def test_mode_auto_no_prefix_when_only_one_fresh_session(self, write_config,
-                                                              fake_say, monkeypatch):
+    def test_mode_auto_no_prefix_when_no_other_sessions(self, write_config,
+                                                         fake_say, isolated_paths):
         write_config(announce_project="auto")
-        monkeypatch.setattr(tts_utils, "fresh_busy_count", lambda: 1)
-        speak("gotowe", project="simple-tts")
+        tts_utils.set_session_busy("me", True)
+        speak("gotowe", project="simple-tts", session_id="me")
         assert self._payload(fake_say)["text"] == sanitize_for_tts("gotowe", "pl")
 
-    def test_mode_auto_prefix_when_multiple_fresh_sessions(self, write_config,
-                                                            fake_say, monkeypatch):
+    def test_mode_auto_prefix_when_other_session_busy(self, write_config,
+                                                       fake_say, isolated_paths):
         write_config(announce_project="auto")
-        monkeypatch.setattr(tts_utils, "fresh_busy_count", lambda: 2)
+        tts_utils.set_session_busy("me", True)
+        tts_utils.set_session_busy("other", True)
         label = tts_utils._project_label("simple-tts")
-        speak("gotowe", project="simple-tts")
+        speak("gotowe", project="simple-tts", session_id="me")
+        expected = sanitize_for_tts(f"{label}: gotowe", "pl")
+        assert self._payload(fake_say)["text"] == expected
+
+    def test_mode_auto_prefix_when_own_marker_already_cleared(self, write_config,
+                                                               fake_say, isolated_paths):
+        """Regresja: hook Stop czyści własny znacznik busy PRZED wywołaniem
+        speak(). Mimo braku własnego markera, prefiks MA się pojawić, jeśli
+        pracuje inna sesja — to jest kanoniczny przypadek z recenzji."""
+        write_config(announce_project="auto")
+        tts_utils.set_session_busy("other", True)
+        label = tts_utils._project_label("simple-tts")
+        speak("gotowe", project="simple-tts", session_id="me")
         expected = sanitize_for_tts(f"{label}: gotowe", "pl")
         assert self._payload(fake_say)["text"] == expected
 
@@ -476,14 +489,57 @@ class TestShouldAnnounceProject:
             {"announce_project": "on"}, "proj") is True
 
     def test_mode_auto_below_threshold(self, monkeypatch):
-        monkeypatch.setattr(tts_utils, "fresh_busy_count", lambda: 1)
+        monkeypatch.setattr(tts_utils, "fresh_busy_count",
+                            lambda exclude_session_id=None: 0)
         assert tts_utils._should_announce_project(
-            {"announce_project": "auto"}, "proj") is False
+            {"announce_project": "auto"}, "proj", session_id="me") is False
 
     def test_mode_auto_above_threshold(self, monkeypatch):
-        monkeypatch.setattr(tts_utils, "fresh_busy_count", lambda: 2)
+        monkeypatch.setattr(tts_utils, "fresh_busy_count",
+                            lambda exclude_session_id=None: 1)
         assert tts_utils._should_announce_project(
-            {"announce_project": "auto"}, "proj") is True
+            {"announce_project": "auto"}, "proj", session_id="me") is True
+
+    def test_mode_auto_passes_session_id_to_fresh_busy_count(self, monkeypatch):
+        captured = {}
+
+        def fake_fresh_busy_count(exclude_session_id=None):
+            captured["exclude"] = exclude_session_id
+            return 1
+
+        monkeypatch.setattr(tts_utils, "fresh_busy_count", fake_fresh_busy_count)
+        tts_utils._should_announce_project(
+            {"announce_project": "auto"}, "proj", session_id="me")
+        assert captured["exclude"] == "me"
+
+    def test_mode_auto_no_session_id_excludes_nothing(self, monkeypatch):
+        captured = {}
+
+        def fake_fresh_busy_count(exclude_session_id=None):
+            captured["exclude"] = exclude_session_id
+            return 1
+
+        monkeypatch.setattr(tts_utils, "fresh_busy_count", fake_fresh_busy_count)
+        tts_utils._should_announce_project({"announce_project": "auto"}, "proj")
+        assert captured["exclude"] is None
+
+    def test_mode_auto_only_own_marker_via_real_markers(self, write_config,
+                                                         isolated_paths):
+        tts_utils.set_session_busy("me", True)
+        assert tts_utils._should_announce_project(
+            {"announce_project": "auto"}, "proj", session_id="me") is False
+
+    def test_mode_auto_own_plus_other_marker_via_real_markers(self, write_config,
+                                                               isolated_paths):
+        tts_utils.set_session_busy("me", True)
+        tts_utils.set_session_busy("other", True)
+        assert tts_utils._should_announce_project(
+            {"announce_project": "auto"}, "proj", session_id="me") is True
+
+    def test_mode_auto_no_markers_via_real_markers(self, write_config,
+                                                    isolated_paths):
+        assert tts_utils._should_announce_project(
+            {"announce_project": "auto"}, "proj", session_id="me") is False
 
 
 class TestQuietHours:

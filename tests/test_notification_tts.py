@@ -77,3 +77,14 @@ def test_hook_passes_project_none_without_cwd(write_config, monkeypatch):
     with pytest.raises(SystemExit):
         notification_tts.main()
     assert spoken[0][1].get("project") is None
+
+
+def test_hook_passes_session_id(write_config, monkeypatch):
+    write_config()
+    spoken = []
+    monkeypatch.setattr(notification_tts, "read_hook_input", lambda: {
+        "session_id": "sY", "message": "Claude needs your permission to use Bash"})
+    monkeypatch.setattr(notification_tts, "speak", lambda *a, **k: spoken.append((a, k)))
+    with pytest.raises(SystemExit):
+        notification_tts.main()
+    assert spoken[0][1].get("session_id") == "sY"

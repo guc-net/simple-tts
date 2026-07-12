@@ -64,9 +64,10 @@ DEFAULT_CONFIG = {
     # Unknown values fall back to "spark". Switchable live (/tts theme <name>).
     "overlay_theme": "spark",
     # Prefiks nazwy projektu przed komunikatem (z basename cwd hooka), np.
-    # "Simple tts: gotowe". "auto" = tylko gdy widać ślad >1 pracującej sesji na
-    # dysku (fresh_busy_count() > 1); "on" = zawsze, gdy hook przekazał project;
-    # "off" = nigdy.
+    # "Simple tts: gotowe". "auto" = tylko gdy pracuje CO NAJMNIEJ JEDNA INNA
+    # sesja (fresh_busy_count(exclude_session_id=...) > 0 — własny znacznik
+    # busy jest wykluczony, niezależnie czy akurat postawiony); "on" = zawsze,
+    # gdy hook przekazał project; "off" = nigdy.
     "announce_project": "auto",
     # Czy grać krótki dźwięk (earcon) przed mową dla skategoryzowanych komunikatów
     # (<!-- TTS[ok|err|q]: -->). Samo odtwarzanie earconu to osobny mechanizm
@@ -359,9 +360,15 @@ def session_busy_fresh(session_id, max_age=BUSY_STALE_SECS):
         return False
 
 
-def fresh_busy_count():
-    """Liczba znaczników busy (dowolnych sesji) świeższych niż BUSY_STALE_SECS,
-    licząc TERAZ na dysku — bez rozróżniania, czyje są. Błędy/brak katalogu -> 0."""
+def fresh_busy_count(exclude_session_id=None):
+    """Liczba znaczników busy świeższych niż BUSY_STALE_SECS, licząc TERAZ na
+    dysku. Gdy exclude_session_id podany, POMIJA znacznik tej sesji (po tej
+    samej sanityzacji nazwy pliku co _session_marker) — używane, by policzyć
+    INNE pracujące sesje niezależnie od tego, czy własny marker jest akurat
+    postawiony. Wywołanie bez argumentu nic nie pomija (jak dawniej). Błędy/
+    brak katalogu -> 0."""
+    exclude_name = (os.path.basename(_session_marker(BUSY_DIR, exclude_session_id))
+                    if exclude_session_id else None)
     try:
         names = os.listdir(BUSY_DIR)
     except OSError:
@@ -369,6 +376,8 @@ def fresh_busy_count():
     now = time.time()
     count = 0
     for name in names:
+        if name == exclude_name:
+            continue
         marker = os.path.join(BUSY_DIR, name)
         try:
             try:
@@ -544,9 +553,12 @@ def _project_label(project):
     return label or None
 
 
-def _should_announce_project(config, project):
-    """Czy doklejić prefiks projektu dla TEGO komunikatu, wg announce_project
-    (auto|on|off) i fresh_busy_count(). Brak `project` -> zawsze False."""
+def _should_announce_project(config, project, session_id=None):
+    """Czy doklejić prefiks projektu dla TEGO komunikatu. auto = gdy pracuje
+    co najmniej JEDNA INNA sesja (fresh_busy_count z wykluczeniem session_id
+    > 0) — spójnie dla wszystkich hooków, niezależnie od tego, czy własny
+    znacznik busy jest akurat postawiony (notification/ask_question) czy już
+    zdjęty (Stop). Brak `project` -> zawsze False."""
     if not project:
         return False
     mode = str(config.get('announce_project', 'auto')).strip().lower()
@@ -554,7 +566,7 @@ def _should_announce_project(config, project):
         return False
     if mode == 'on':
         return True
-    return fresh_busy_count() > 1
+    return fresh_busy_count(exclude_session_id=session_id) > 0
 
 
 def _spawn(payload):
@@ -578,7 +590,8 @@ def _spawn(payload):
         return None
 
 
-def speak(text, priority=False, force=False, project=None, category=None):
+def speak(text, priority=False, force=False, project=None, category=None,
+          session_id=None):
     """
     Speak text via the detached edge_speak.py helper. Non-blocking: the
     helper is spawned and the hook returns immediately.
@@ -595,6 +608,9 @@ def speak(text, priority=False, force=False, project=None, category=None):
     it's warranted (see announce_project config), a "<project label>: " prefix
     is prepended to `text` before sanitization, and takes precedence over the
     name prefix below for this message.
+    session_id=<caller's session id>: forwarded to _should_announce_project()
+    so "auto" mode can exclude the caller's own busy marker and count only
+    OTHER working sessions (see _should_announce_project docstring).
     category=<'ok'|'err'|'q'|None>: parsed from a <!-- TTS[ok|err|q]: --> tag
     (stop_tts.py only). When recognized and the "earcons" config allows it,
     adds an "earcon" key to the payload — playing the sound is a separate
@@ -609,7 +625,7 @@ def speak(text, priority=False, force=False, project=None, category=None):
     if not force and (not config.get('enabled', True) or in_quiet_hours(config)):
         return
 
-    project_prefixed = bool(_should_announce_project(config, project))
+    project_prefixed = bool(_should_announce_project(config, project, session_id))
     if project_prefixed:
         text = f"{_project_label(project)}: {text}"
 

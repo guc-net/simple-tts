@@ -125,3 +125,15 @@ def test_hook_passes_project_none_without_cwd(write_config, monkeypatch):
     with pytest.raises(SystemExit):
         ask_question_tts.main()
     assert spoken[0][1].get("project") is None
+
+
+def test_hook_passes_session_id(write_config, monkeypatch):
+    write_config()
+    spoken = []
+    monkeypatch.setattr(ask_question_tts, "read_hook_input", lambda: {
+        "session_id": "q5", "tool_name": "ExitPlanMode"})
+    monkeypatch.setattr(ask_question_tts, "speak",
+                        lambda text, **k: spoken.append((text, k)))
+    with pytest.raises(SystemExit):
+        ask_question_tts.main()
+    assert spoken[0][1].get("session_id") == "q5"

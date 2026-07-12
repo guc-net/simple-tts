@@ -237,3 +237,24 @@ def test_fresh_busy_count_two_fresh_markers(isolated_paths):
     tts_utils.set_session_busy("a", True)
     tts_utils.set_session_busy("b", True)
     assert tts_utils.fresh_busy_count() == 2
+
+
+# --- fresh_busy_count(exclude_session_id=...) (pomija znacznik własnej sesji) -
+
+def test_fresh_busy_count_exclude_own_marker(isolated_paths):
+    tts_utils.set_session_busy("me", True)
+    tts_utils.set_session_busy("other", True)
+    assert tts_utils.fresh_busy_count(exclude_session_id="me") == 1
+    assert tts_utils.fresh_busy_count() == 2
+
+
+def test_fresh_busy_count_exclude_only_own_marker(isolated_paths):
+    tts_utils.set_session_busy("me", True)
+    assert tts_utils.fresh_busy_count(exclude_session_id="me") == 0
+
+
+def test_fresh_busy_count_exclude_none_behaves_like_no_argument(isolated_paths):
+    tts_utils.set_session_busy("a", True)
+    tts_utils.set_session_busy("b", True)
+    assert tts_utils.fresh_busy_count(exclude_session_id=None) == \
+        tts_utils.fresh_busy_count()
