@@ -4,9 +4,11 @@ skips synthesis), and falls back to local `say` on any failure."""
 
 import json
 import os
+import time
 
 import audio_cache as ac
 import edge_speak
+import tts_utils as tu
 
 
 class FakeCompleted:
@@ -186,3 +188,150 @@ def test_no_payload_is_silent(monkeypatch, tmp_path):
     monkeypatch.setattr(edge_speak.subprocess, "run", lambda *a, **k: ran.append(a))
     edge_speak.main()
     assert ran == []
+
+
+# --- _speak_payload: engine='say' bypasses cache/synthesis entirely --------
+
+def test_speak_payload_say_engine_calls_say_and_skips_uvx(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(edge_speak, "_say", lambda p: calls.append(p))
+
+    def fail_run(args, **kw):
+        raise AssertionError(f"subprocess.run should not run for engine=say: {args}")
+
+    monkeypatch.setattr(edge_speak.subprocess, "run", fail_run)
+    monkeypatch.setattr(ac, "CACHE_DIR", str(tmp_path / "audiocache"))
+
+    payload = _payload(engine="say")
+    edge_speak._speak_payload(payload)
+
+    assert calls == [payload]
+
+
+# --- _speak_payload: engine='edge' (or missing) behaves like the old main() -
+
+def test_speak_payload_edge_engine_cache_hit(monkeypatch, tmp_path):
+    runs = _patch_common(monkeypatch, tmp_path, _synth_ok)
+    cache_file = ac.cache_path(_payload())
+    os.makedirs(os.path.dirname(cache_file), exist_ok=True)
+    with open(cache_file, "wb") as f:
+        f.write(b"cached-audio")
+
+    edge_speak._speak_payload(_payload(engine="edge"))
+
+    assert not any(r[:2] == ["uvx", "edge-tts"] for r in runs)
+    assert runs[0] == ["afplay", cache_file]
+
+
+def test_speak_payload_missing_engine_key_defaults_to_edge_and_synthesizes(monkeypatch, tmp_path):
+    runs = _patch_common(monkeypatch, tmp_path, _synth_ok)
+
+    edge_speak._speak_payload(_payload())  # no "engine" key at all
+
+    assert runs[0][:2] == ["uvx", "edge-tts"]
+    assert runs[1][0] == "afplay"
+
+
+# --- main(): thin wrapper around _speak_payload + _drain_loop --------------
+
+def test_main_calls_speak_payload_then_drain_loop(monkeypatch):
+    order = []
+    payload = _payload()
+    monkeypatch.setenv("SIMPLE_TTS_PAYLOAD", json.dumps(payload))
+    monkeypatch.setattr(edge_speak, "_speak_payload", lambda p: order.append(("speak", p)))
+    monkeypatch.setattr(edge_speak, "_drain_loop", lambda: order.append(("drain",)))
+
+    edge_speak.main()
+
+    assert order == [("speak", payload), ("drain",)]
+
+
+def test_main_no_payload_does_not_speak_or_drain(monkeypatch):
+    monkeypatch.delenv("SIMPLE_TTS_PAYLOAD", raising=False)
+    calls = []
+    monkeypatch.setattr(edge_speak, "_speak_payload", lambda p: calls.append(p))
+    monkeypatch.setattr(edge_speak, "_drain_loop", lambda: calls.append("drain"))
+
+    edge_speak.main()
+
+    assert calls == []
+
+
+def test_main_empty_text_does_not_speak_or_drain(monkeypatch):
+    monkeypatch.setenv("SIMPLE_TTS_PAYLOAD", json.dumps({"text": ""}))
+    calls = []
+    monkeypatch.setattr(edge_speak, "_speak_payload", lambda p: calls.append(p))
+    monkeypatch.setattr(edge_speak, "_drain_loop", lambda: calls.append("drain"))
+
+    edge_speak.main()
+
+    assert calls == []
+
+
+# --- _drain_step -------------------------------------------------------
+
+def test_drain_step_pops_next_payload_and_refreshes_state(isolated_paths):
+    tu._locked_state(lambda s: {"pid": os.getpid(), "ts": 1.0})
+    tu._queue_enqueue({"text": "kolejny"})
+
+    result = edge_speak._drain_step()
+
+    assert result == {"payload": {"text": "kolejny"}}
+    state = tu._locked_state(lambda s: None)
+    assert state["pid"] == os.getpid()
+    assert state["ts"] > 1.0
+    assert list((isolated_paths / "queue.d").iterdir()) == []
+
+
+def test_drain_step_stops_and_clears_pid_when_queue_empty(isolated_paths):
+    tu._locked_state(lambda s: {"pid": os.getpid(), "ts": 1.0})
+
+    result = edge_speak._drain_step()
+
+    assert result == {"stop": True}
+    state = tu._locked_state(lambda s: None)
+    assert "pid" not in state
+    assert state["ts"] > 1.0
+
+
+def test_drain_step_stops_without_touching_state_when_pid_mismatched(isolated_paths):
+    tu._locked_state(lambda s: {"pid": 999999, "ts": 1.0})
+    tu._queue_enqueue({"text": "nietknięty"})
+    queue_dir = isolated_paths / "queue.d"
+    before = sorted(os.listdir(queue_dir))
+
+    result = edge_speak._drain_step()
+
+    assert result == {"stop": True}
+    state = tu._locked_state(lambda s: None)
+    assert state == {"pid": 999999, "ts": 1.0}
+    assert sorted(os.listdir(queue_dir)) == before
+    assert len(before) == 1
+
+
+def test_drain_step_stops_without_touching_state_when_state_empty(isolated_paths):
+    result = edge_speak._drain_step()
+
+    assert result == {"stop": True}
+    state = tu._locked_state(lambda s: None)
+    assert state == {}
+
+
+# --- _drain_loop ---------------------------------------------------------
+
+def test_drain_loop_speaks_all_queued_entries_in_fifo_order_then_stops(isolated_paths, monkeypatch):
+    monkeypatch.setattr(edge_speak.time, "sleep", lambda s: None)
+    calls = []
+    monkeypatch.setattr(edge_speak, "_speak_payload", lambda p: calls.append(p))
+
+    tu._locked_state(lambda s: {"pid": os.getpid(), "ts": time.time()})
+    tu._queue_enqueue({"text": "pierwszy"})
+    time.sleep(0.001)  # different time_ns() prefix, keeps FIFO order deterministic
+    tu._queue_enqueue({"text": "drugi"})
+
+    edge_speak._drain_loop()
+
+    assert calls == [{"text": "pierwszy"}, {"text": "drugi"}]
+    assert list((isolated_paths / "queue.d").iterdir()) == []  # drained, no leftovers
+    state = tu._locked_state(lambda s: None)
+    assert "pid" not in state  # loop left the idle state behind, not our own pid
