@@ -154,6 +154,39 @@ def test_stale_attention_not_waiting(paths):
     assert KS.snapshot()["waiting"] is False
 
 
+def test_attention_count_counts_fresh_only(paths):
+    _config(paths)
+    _attention(paths, "a")
+    _attention(paths, "b")
+    _attention(paths, "dead", age=KS.ATTENTION_STALE_SEC + 60)
+    assert KS.attention_count() == 2
+
+
+def test_attention_count_zero_without_dir(paths):
+    assert KS.attention_count() == 0
+
+
+def test_snapshot_has_waiting_count(paths):
+    _config(paths)
+    _busy(paths, "a")
+    _attention(paths, "a")
+    snap = KS.snapshot()
+    assert snap["waiting_count"] == 1
+    assert snap["waiting"] is True
+
+
+def test_snapshot_waiting_count_zero_when_none_waiting(paths):
+    _config(paths)
+    _busy(paths, "a")
+    assert KS.snapshot()["waiting_count"] == 0
+
+
+def test_snapshot_waiting_count_zero_when_disabled(paths):
+    _config(paths, knight_rider=False)
+    _attention(paths, "a")
+    assert KS.snapshot()["waiting_count"] == 0
+
+
 # --- licznik sesji i wiek pracy ----------------------------------------------
 
 def test_busy_count_counts_fresh_markers_only(paths):

@@ -95,6 +95,36 @@ def test_spark_eye_recolors_when_waiting():
     assert not hasattr(t, "i_lens_a")
 
 
+def test_spark_one_lens_blue_when_one_waiting():
+    # 3 agentów pracuje, JEDNO zadanie czeka -> tylko JEDNA soczewka niebieska
+    t = _mk("spark")
+    snap = {"busy": 3, "age": 0.0, "waiting": True, "waiting_count": 1}
+    _n, ops, _i = _settle(t, "think", snap=snap, seconds=3.0)
+    blue = [i for i in range(t.i_alens0, t.i_alens0 + 3) if ops.get(i, 0.0) > 0.4]
+    assert len(blue) == 1, f"jeden czekający -> jedna niebieska soczewka (jest {len(blue)})"
+
+
+def test_spark_two_lenses_blue_when_two_waiting():
+    t = _mk("spark")
+    snap = {"busy": 3, "age": 0.0, "waiting": True, "waiting_count": 2}
+    _n, ops, _i = _settle(t, "think", snap=snap, seconds=3.0)
+    blue = [i for i in range(t.i_alens0, t.i_alens0 + 3) if ops.get(i, 0.0) > 0.4]
+    assert len(blue) == 2, f"dwóch czekających -> dwie niebieskie soczewki (jest {len(blue)})"
+
+
+def test_spark_non_waiting_lenses_stay_green():
+    # przy jednym czekającym: soczewka 0 niebieska (zielona zgaszona),
+    # pozostałe zostają zielone
+    t = _mk("spark")
+    snap = {"busy": 3, "age": 0.0, "waiting": True, "waiting_count": 1}
+    _n, ops, _i = _settle(t, "think", snap=snap, seconds=3.0)
+    assert ops.get(t.i_alens0 + 0, 0.0) > 0.4, "soczewka 0 ma być niebieska"
+    assert ops.get(0, 0.0) < 0.3, "zielona soczewka 0 ma przygasnąć pod niebieską"
+    assert ops.get(1, 0.0) > 0.4 and ops.get(2, 0.0) > 0.4, "soczewki 1,2 zostają zielone"
+    assert ops.get(t.i_alens0 + 1, 0.0) < 0.1 and ops.get(t.i_alens0 + 2, 0.0) < 0.1, \
+        "nakładki niebieskie 1,2 mają być zgaszone"
+
+
 def test_spark_sparks_turn_blue_when_waiting():
     t = _mk("spark")
     wait3 = {"busy": 3, "age": 0.0, "waiting": True}
@@ -203,6 +233,36 @@ def test_spark_merges_and_rotates_when_speaking():
     assert len(lit) == 1, "przy mowie soczewki scalają się w jedną"
     assert t.rphase > 0.9, "po scaleniu oko się obraca"
     assert all(abs(t.lens_x[i] - t.cx) < 1.0 for i in range(t.i_alens0))
+
+
+def _time_until(t, predicate, mode, snap, level, t0=300.0, max_s=3.0):
+    """Sekundy do spełnienia predicate(t) w danym trybie (max_s gdy nie zajdzie)."""
+    fps, now = t.fps(mode), t0
+    for _ in range(int(max_s * fps)):
+        now += 1.0 / fps
+        t.step(1.0 / fps, now, level, snap)
+        if predicate(t):
+            return now - t0
+    return max_s
+
+
+def test_spark_speak_rotation_faster_than_return():
+    # busy=1 -> soczewki scalone od startu, więc rphase zależy TYLKO od tau
+    # rotacji (odseparowane od merge). Przejście PRACA->MOWA ma być wyraźnie
+    # szybsze niż powrót MOWA->praca (mowa startuje od razu, oko musi zdążyć się
+    # obrócić); powrót zostaje bez zmian. Każdy kierunek mierzony od świeżej,
+    # ustabilizowanej instancji, więc rphase startuje z czystego 0 lub 1.
+    snap = {"busy": 1, "age": 0.0}
+    tf = _mk("spark")
+    _settle(tf, "think", snap=snap, seconds=3.0)               # rphase ~0
+    tf.enter_mode("speak", snap)
+    t_fwd = _time_until(tf, lambda th: th.rphase > 0.9, "speak", snap, 0.5)
+    tb = _mk("spark")
+    _settle(tb, "speak", snap=snap, level=0.5, seconds=3.0)    # rphase ~1
+    tb.enter_mode("think", snap)
+    t_back = _time_until(tb, lambda th: th.rphase < 0.1, "think", snap, 0.0)
+    assert t_fwd < 0.85 * t_back, \
+        f"przejscie do mowy ma byc wyraznie szybsze ({t_fwd} < 0.85*{t_back})"
 
 
 def test_spark_rotation_waits_for_merge():

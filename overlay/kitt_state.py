@@ -194,6 +194,12 @@ def is_attention():
     return bool(_fresh_marker_ages(ATTENTION_DIR, ATTENTION_STALE_SEC))
 
 
+def attention_count():
+    """Ile sesji czeka na użytkownika (świeże znaczniki attention) — motyw
+    używa tego, by pokolorować dokładnie tyle soczewek, ile zadań czeka."""
+    return len(_fresh_marker_ages(ATTENTION_DIR, ATTENTION_STALE_SEC))
+
+
 def theme_name():
     """Nazwa motywu nakładki z configu (overlay_theme), znormalizowana.
     Nieznane nazwy rozstrzyga rejestr motywów (fallback na kitt)."""
@@ -218,8 +224,11 @@ def current_mode():
 
 
 def snapshot():
-    """Pełny stan dla nakładki: {'mode','busy','age','waiting'} — jeden odczyt
-    na tick. `mode` steruje ruchem, `waiting` tylko kolorem (do reakcji usera)."""
+    """Pełny stan dla nakładki: {'mode','busy','age','waiting','waiting_count'}
+    — jeden odczyt na tick. `mode` steruje ruchem, `waiting` (bool) i
+    `waiting_count` (ile sesji czeka) tylko kolorem: motyw koloruje dokładnie
+    tyle soczewek, ile zadań czeka na reakcję usera."""
     mode = current_mode()
     return {"mode": mode, "busy": busy_count(), "age": busy_age(),
-            "waiting": is_attention() if mode is not None else False}
+            "waiting": is_attention() if mode is not None else False,
+            "waiting_count": attention_count() if mode is not None else 0}
