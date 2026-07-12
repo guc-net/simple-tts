@@ -12,6 +12,7 @@ from tts_utils import (
     in_quiet_hours,
     language_code,
     load_config,
+    parse_tts_tag,
     sanitize_for_tts,
     speak,
 )
@@ -63,7 +64,7 @@ class TestExtractFromTranscript:
             {"type": "assistant", "message": {"content": [
                 {"type": "text", "text": "Done <!-- TTS: zrobione -->"}]}},
         ])
-        assert extract_tts_from_transcript(path) == "zrobione"
+        assert extract_tts_from_transcript(path) == (None, "zrobione")
 
     def test_no_tag_returns_none(self, tmp_path):
         path = self._write_transcript(tmp_path, [
@@ -80,7 +81,36 @@ class TestExtractFromTranscript:
         path.write_text('not json\n' + json.dumps(
             {"type": "assistant", "message": {"content": [
                 {"type": "text", "text": "<!-- TTS: działa -->"}]}}))
-        assert extract_tts_from_transcript(str(path)) == "działa"
+        assert extract_tts_from_transcript(str(path)) == (None, "działa")
+
+    def test_extracts_category_from_last_assistant_message(self, tmp_path):
+        path = self._write_transcript(tmp_path, [
+            {"type": "assistant", "message": {"content": [
+                {"type": "text", "text": "<!-- TTS[err]: coś nie wyszło -->"}]}},
+        ])
+        assert extract_tts_from_transcript(path) == ("err", "coś nie wyszło")
+
+
+class TestParseTtsTag:
+    def test_no_category_returns_none_category(self):
+        assert parse_tts_tag("<!-- TTS: gotowe -->") == (None, "gotowe")
+
+    @pytest.mark.parametrize("category,text", [
+        ("ok", "sukces"),
+        ("err", "sukces"),
+        ("q", "sukces"),
+    ])
+    def test_recognized_categories(self, category, text):
+        assert parse_tts_tag(f"<!-- TTS[{category}]: {text} -->") == (category, text)
+
+    def test_unrecognized_category_does_not_match(self):
+        assert parse_tts_tag("<!-- TTS[foo]: x -->") is None
+
+    def test_no_tag_returns_none(self):
+        assert parse_tts_tag("zwykły tekst") is None
+
+    def test_whitespace_variants_tolerated(self):
+        assert parse_tts_tag("<!--TTS[ok]:   gotowe  -->") == ("ok", "gotowe")
 
 
 class TestSanitizer:
@@ -129,7 +159,14 @@ class TestSpeak:
         write_config(voice="Ewa", rate=200, engine="say")
         speak("dzień dobry")
         assert len(fake_say) == 1
-        assert fake_say[0][:5] == ["say", "-v", "Ewa", "-r", "200"]
+        assert fake_say[0][1].endswith("edge_speak.py")
+        payload = json.loads(fake_say.envs[0]["SIMPLE_TTS_PAYLOAD"])
+        assert payload == {
+            "engine": "say",
+            "text": "dzień dobry",
+            "say_voice": "Ewa",
+            "say_rate": "200",
+        }
 
     def test_edge_engine_spawns_helper_with_payload(self, write_config, fake_say):
         # Default engine is "edge": speak() spawns the edge_speak.py helper and
@@ -199,10 +236,13 @@ class TestSpeak:
 
     def test_edge_engine_falls_back_to_say_for_unmapped_language(self, write_config, fake_say):
         # A language whose code has no EDGE_VOICES entry uses the local `say`
-        # engine ("xx" passes through language_code as a 2-letter code).
+        # engine ("xx" passes through language_code as a 2-letter code), still
+        # routed through the edge_speak.py helper (payload engine="say").
         write_config(voice="Krzysztof", language="xx")
         speak("hello")
-        assert fake_say[0][0] == "say"
+        assert fake_say[0][1].endswith("edge_speak.py")
+        payload = json.loads(fake_say.envs[0]["SIMPLE_TTS_PAYLOAD"])
+        assert payload["engine"] == "say"
 
     def test_records_pid_and_timestamp(self, write_config, fake_say, isolated_paths):
         write_config()
@@ -242,6 +282,93 @@ class TestSpeak:
         assert (4242, 15) in killed  # SIGTERM == 15
         assert len(fake_say) == 1
 
+    def test_nonpriority_enqueues_while_speaking(self, write_config, fake_say,
+                                                  isolated_paths, monkeypatch):
+        write_config()
+        monkeypatch.setattr(tts_utils, "_is_our_tts", lambda pid: True)
+        (isolated_paths / "state.json").write_text(
+            json.dumps({"pid": 4242, "ts": time.time()}))
+        speak("w kolejce")
+        assert fake_say == []
+        payload = tts_utils._queue_pop()
+        assert payload is not None
+        assert payload["text"] == sanitize_for_tts("w kolejce", "pl")
+
+    def test_priority_clears_queue_before_speaking(self, write_config, fake_say,
+                                                    isolated_paths, monkeypatch):
+        write_config()
+        monkeypatch.setattr(tts_utils, "_is_our_tts", lambda pid: True)
+        monkeypatch.setattr(tts_utils.os, "getpgid", lambda pid: pid)
+        monkeypatch.setattr(tts_utils.os, "killpg", lambda pgid, sig: None)
+        tts_utils._queue_enqueue({"text": "stare"})
+        (isolated_paths / "state.json").write_text(
+            json.dumps({"pid": 4242, "ts": time.time()}))
+        speak("nowe", priority=True)
+        assert tts_utils._queue_pop() is None
+        assert len(fake_say) == 1
+
+    def test_failed_spawn_leaves_state_untouched(self, write_config, isolated_paths,
+                                                   monkeypatch):
+        write_config()
+        assert not (isolated_paths / "state.json").exists()
+
+        def boom(*args, **kwargs):
+            raise OSError("boom")
+
+        monkeypatch.setattr(tts_utils.subprocess, "Popen", boom)
+        speak("cokolwiek")
+        state_path = isolated_paths / "state.json"
+        if state_path.exists():
+            content = state_path.read_text().strip()
+            assert content in ("", "{}")
+
+    def test_empty_text_does_not_enqueue_or_spawn(self, write_config, fake_say,
+                                                   isolated_paths, monkeypatch):
+        write_config()
+        monkeypatch.setattr(tts_utils, "_is_our_tts", lambda pid: True)
+        (isolated_paths / "state.json").write_text(
+            json.dumps({"pid": 4242, "ts": time.time()}))
+        speak("")
+        assert fake_say == []
+        assert tts_utils._queue_pop() is None
+
+    def test_say_payload_is_minimal(self, write_config, fake_say):
+        write_config(voice="Ewa", rate=200, engine="say")
+        speak("dzień dobry")
+        payload = json.loads(fake_say.envs[0]["SIMPLE_TTS_PAYLOAD"])
+        assert "intro_sound" not in payload
+        assert "edge_pitch" not in payload
+
+    def test_earcon_set_from_category_when_enabled(self, write_config, fake_say):
+        write_config()
+        speak("gotowe", category="ok")
+        payload = json.loads(fake_say.envs[0]["SIMPLE_TTS_PAYLOAD"])
+        assert payload["earcon"] == "ok"
+
+    def test_no_category_means_no_earcon_key(self, write_config, fake_say):
+        write_config()
+        speak("gotowe", category=None)
+        payload = json.loads(fake_say.envs[0]["SIMPLE_TTS_PAYLOAD"])
+        assert "earcon" not in payload
+
+    def test_earcons_disabled_by_config(self, write_config, fake_say):
+        write_config(earcons=False)
+        speak("gotowe", category="err")
+        payload = json.loads(fake_say.envs[0]["SIMPLE_TTS_PAYLOAD"])
+        assert "earcon" not in payload
+
+    def test_unexpected_category_value_means_no_earcon(self, write_config, fake_say):
+        write_config()
+        speak("gotowe", category="bogus")
+        payload = json.loads(fake_say.envs[0]["SIMPLE_TTS_PAYLOAD"])
+        assert "earcon" not in payload
+
+    def test_earcon_set_in_say_payload_too(self, write_config, fake_say):
+        write_config(engine="say")
+        speak("gotowe", category="q")
+        payload = json.loads(fake_say.envs[0]["SIMPLE_TTS_PAYLOAD"])
+        assert payload["earcon"] == "q"
+
 
 class TestMute:
     def test_enabled_false_is_silent(self, write_config, fake_say):
@@ -263,6 +390,156 @@ class TestMute:
         write_config(enabled=False)
         speak("test wymuszony", force=True)
         assert len(fake_say) == 1
+
+
+class TestProjectAnnounce:
+    def _payload(self, fake_say):
+        return json.loads(fake_say.envs[0]["SIMPLE_TTS_PAYLOAD"])
+
+    def test_no_project_no_prefix_regardless_of_mode(self, write_config, fake_say):
+        write_config(announce_project="on")
+        speak("gotowe", project=None)
+        assert self._payload(fake_say)["text"] == sanitize_for_tts("gotowe", "pl")
+
+    def test_mode_on_forces_prefix_even_with_no_other_sessions(self, write_config, fake_say):
+        write_config(announce_project="on")
+        label = tts_utils._project_label("simple-tts")
+        speak("testy przeszły", project="simple-tts")
+        expected = sanitize_for_tts(f"{label}: testy przeszły", "pl")
+        assert self._payload(fake_say)["text"] == expected
+
+    def test_mode_auto_no_prefix_when_no_other_sessions(self, write_config,
+                                                         fake_say, isolated_paths):
+        write_config(announce_project="auto")
+        tts_utils.set_session_busy("me", True)
+        speak("gotowe", project="simple-tts", session_id="me")
+        assert self._payload(fake_say)["text"] == sanitize_for_tts("gotowe", "pl")
+
+    def test_mode_auto_prefix_when_other_session_busy(self, write_config,
+                                                       fake_say, isolated_paths):
+        write_config(announce_project="auto")
+        tts_utils.set_session_busy("me", True)
+        tts_utils.set_session_busy("other", True)
+        label = tts_utils._project_label("simple-tts")
+        speak("gotowe", project="simple-tts", session_id="me")
+        expected = sanitize_for_tts(f"{label}: gotowe", "pl")
+        assert self._payload(fake_say)["text"] == expected
+
+    def test_mode_auto_prefix_when_own_marker_already_cleared(self, write_config,
+                                                               fake_say, isolated_paths):
+        """Regresja: hook Stop czyści własny znacznik busy PRZED wywołaniem
+        speak(). Mimo braku własnego markera, prefiks MA się pojawić, jeśli
+        pracuje inna sesja — to jest kanoniczny przypadek z recenzji."""
+        write_config(announce_project="auto")
+        tts_utils.set_session_busy("other", True)
+        label = tts_utils._project_label("simple-tts")
+        speak("gotowe", project="simple-tts", session_id="me")
+        expected = sanitize_for_tts(f"{label}: gotowe", "pl")
+        assert self._payload(fake_say)["text"] == expected
+
+    def test_mode_off_beats_auto_even_with_real_busy_markers(self, write_config,
+                                                              fake_say, isolated_paths):
+        write_config(announce_project="off")
+        tts_utils.set_session_busy("s1", True)
+        tts_utils.set_session_busy("s2", True)
+        speak("gotowe", project="simple-tts")
+        assert self._payload(fake_say)["text"] == sanitize_for_tts("gotowe", "pl")
+
+    def test_project_prefix_excludes_name_prefix(self, write_config, fake_say):
+        write_config(name="Adam", name_chance=1.0, announce_project="on")
+        speak("cześć", project="proj")
+        payload_text = self._payload(fake_say)["text"]
+        assert not payload_text.lower().startswith("adam")
+        label = tts_utils._project_label("proj")
+        assert payload_text.startswith(sanitize_for_tts(label, "pl"))
+
+    def test_name_prefix_still_works_without_project(self, write_config, fake_say):
+        write_config(name="Adam", name_chance=1.0, announce_project="on")
+        speak("cześć", project=None)
+        payload_text = self._payload(fake_say)["text"]
+        assert payload_text.lower().startswith("adam")
+
+
+class TestProjectLabel:
+    def test_separators_become_spaces(self):
+        assert tts_utils._project_label("simple-tts.local_test") == \
+            "simple tts local test"
+
+    def test_none_is_none(self):
+        assert tts_utils._project_label(None) is None
+
+    def test_empty_is_none(self):
+        assert tts_utils._project_label("") is None
+
+
+class TestShouldAnnounceProject:
+    def test_no_project_always_false(self, write_config, monkeypatch):
+        monkeypatch.setattr(tts_utils, "fresh_busy_count", lambda: 5)
+        assert tts_utils._should_announce_project({"announce_project": "on"}, None) is False
+        assert tts_utils._should_announce_project({"announce_project": "auto"}, "") is False
+
+    def test_mode_off(self, monkeypatch):
+        monkeypatch.setattr(tts_utils, "fresh_busy_count", lambda: 5)
+        assert tts_utils._should_announce_project(
+            {"announce_project": "off"}, "proj") is False
+
+    def test_mode_on(self, monkeypatch):
+        monkeypatch.setattr(tts_utils, "fresh_busy_count", lambda: 0)
+        assert tts_utils._should_announce_project(
+            {"announce_project": "on"}, "proj") is True
+
+    def test_mode_auto_below_threshold(self, monkeypatch):
+        monkeypatch.setattr(tts_utils, "fresh_busy_count",
+                            lambda exclude_session_id=None: 0)
+        assert tts_utils._should_announce_project(
+            {"announce_project": "auto"}, "proj", session_id="me") is False
+
+    def test_mode_auto_above_threshold(self, monkeypatch):
+        monkeypatch.setattr(tts_utils, "fresh_busy_count",
+                            lambda exclude_session_id=None: 1)
+        assert tts_utils._should_announce_project(
+            {"announce_project": "auto"}, "proj", session_id="me") is True
+
+    def test_mode_auto_passes_session_id_to_fresh_busy_count(self, monkeypatch):
+        captured = {}
+
+        def fake_fresh_busy_count(exclude_session_id=None):
+            captured["exclude"] = exclude_session_id
+            return 1
+
+        monkeypatch.setattr(tts_utils, "fresh_busy_count", fake_fresh_busy_count)
+        tts_utils._should_announce_project(
+            {"announce_project": "auto"}, "proj", session_id="me")
+        assert captured["exclude"] == "me"
+
+    def test_mode_auto_no_session_id_excludes_nothing(self, monkeypatch):
+        captured = {}
+
+        def fake_fresh_busy_count(exclude_session_id=None):
+            captured["exclude"] = exclude_session_id
+            return 1
+
+        monkeypatch.setattr(tts_utils, "fresh_busy_count", fake_fresh_busy_count)
+        tts_utils._should_announce_project({"announce_project": "auto"}, "proj")
+        assert captured["exclude"] is None
+
+    def test_mode_auto_only_own_marker_via_real_markers(self, write_config,
+                                                         isolated_paths):
+        tts_utils.set_session_busy("me", True)
+        assert tts_utils._should_announce_project(
+            {"announce_project": "auto"}, "proj", session_id="me") is False
+
+    def test_mode_auto_own_plus_other_marker_via_real_markers(self, write_config,
+                                                               isolated_paths):
+        tts_utils.set_session_busy("me", True)
+        tts_utils.set_session_busy("other", True)
+        assert tts_utils._should_announce_project(
+            {"announce_project": "auto"}, "proj", session_id="me") is True
+
+    def test_mode_auto_no_markers_via_real_markers(self, write_config,
+                                                    isolated_paths):
+        assert tts_utils._should_announce_project(
+            {"announce_project": "auto"}, "proj", session_id="me") is False
 
 
 class TestQuietHours:

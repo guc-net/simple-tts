@@ -212,3 +212,49 @@ def test_notification_speaks_when_not_busy(write_config, isolated_paths, monkeyp
         notification_tts.main()
     assert spoke
     assert (isolated_paths / "attention.d" / "sN").exists()
+
+
+# --- fresh_busy_count() (liczba świeżych znaczników busy, dowolna sesja) -----
+
+def test_fresh_busy_count_zero_without_dir(isolated_paths):
+    assert tts_utils.fresh_busy_count() == 0
+
+
+def test_fresh_busy_count_one_fresh_marker(isolated_paths):
+    tts_utils.set_session_busy("a", True)
+    assert tts_utils.fresh_busy_count() == 1
+
+
+def test_fresh_busy_count_ignores_stale_marker(isolated_paths):
+    tts_utils.set_session_busy("a", True)
+    tts_utils.set_session_busy("b", True)
+    marker = isolated_paths / "busy.d" / "b"
+    marker.write_text(str(int(time.time()) - 20 * 60))   # przeterminowany
+    assert tts_utils.fresh_busy_count() == 1
+
+
+def test_fresh_busy_count_two_fresh_markers(isolated_paths):
+    tts_utils.set_session_busy("a", True)
+    tts_utils.set_session_busy("b", True)
+    assert tts_utils.fresh_busy_count() == 2
+
+
+# --- fresh_busy_count(exclude_session_id=...) (pomija znacznik własnej sesji) -
+
+def test_fresh_busy_count_exclude_own_marker(isolated_paths):
+    tts_utils.set_session_busy("me", True)
+    tts_utils.set_session_busy("other", True)
+    assert tts_utils.fresh_busy_count(exclude_session_id="me") == 1
+    assert tts_utils.fresh_busy_count() == 2
+
+
+def test_fresh_busy_count_exclude_only_own_marker(isolated_paths):
+    tts_utils.set_session_busy("me", True)
+    assert tts_utils.fresh_busy_count(exclude_session_id="me") == 0
+
+
+def test_fresh_busy_count_exclude_none_behaves_like_no_argument(isolated_paths):
+    tts_utils.set_session_busy("a", True)
+    tts_utils.set_session_busy("b", True)
+    assert tts_utils.fresh_busy_count(exclude_session_id=None) == \
+        tts_utils.fresh_busy_count()

@@ -70,3 +70,50 @@ def test_bad_json_is_silent(monkeypatch, capsys):
     monkeypatch.setattr("sys.stdin", io.StringIO("not json"))
     md.main()
     assert capsys.readouterr().out.strip() == ""
+
+
+def test_category_ok_is_green():
+    out = md.render_tag("<!-- TTS[ok]: gotowe -->", "styled")
+    assert md.GREEN in out
+    assert "🔊 gotowe" in out
+
+
+def test_category_err_is_firebrick():
+    out = md.render_tag("<!-- TTS[err]: boom -->", "styled")
+    assert md.FIREBRICK in out
+    assert "🔊 boom" in out
+    assert md.GREEN not in out
+
+
+def test_category_q_is_amber():
+    out = md.render_tag("<!-- TTS[q]: która opcja? -->", "styled")
+    assert md.AMBER in out
+
+
+def test_no_category_still_green():
+    out = md.render_tag("<!-- TTS: neutralnie -->", "styled")
+    assert md.GREEN in out
+
+
+def test_plain_ignores_category():
+    out = md.render_tag("<!-- TTS[err]: x -->", "plain")
+    assert out == "🔊 x"
+    assert md.FIREBRICK not in out
+    assert md.GREEN not in out
+
+
+def test_hidden_removes_categorized_marker():
+    assert md.render_tag("A\n<!-- TTS[q]: x -->\n", "hidden") == "A"
+
+
+def test_unknown_category_not_rewritten():
+    text = "<!-- TTS[foo]: x -->"
+    assert md.render_tag(text, "styled") == text
+
+
+def test_prefilter_finds_categorized_marker(monkeypatch, capsys):
+    out = _run({"message": "tekst <!-- TTS[err]: boom -->"}, monkeypatch, capsys)
+    payload = json.loads(out)
+    display = payload["hookSpecificOutput"]["displayContent"]
+    assert "🔊 boom" in display
+    assert md.FIREBRICK in display

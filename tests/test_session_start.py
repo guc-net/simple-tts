@@ -66,6 +66,12 @@ class TestBuildInstruction:
         text = build_instruction({"language": "Polish", "voice": "Krzysztof"})
         assert "<!-- TTS:" in text
 
+    def test_tag_mode_teaches_categories(self):
+        text = build_instruction({"language": "Polish", "voice": "Krzysztof"})
+        assert "TTS[ok]" in text
+        assert "TTS[err]" in text
+        assert "TTS[q]" in text
+
 
 class TestToolMode:
     def _cfg(self, **kw):
@@ -110,3 +116,9 @@ class TestToolMode:
         assert "ONE block" in text
         assert "NO accompanying prose" in text
         assert "silently" in text  # the ToolSearch step must not emit text
+
+    def test_tool_mode_gets_no_category_instruction(self):
+        # Category tags (TTS[ok]/[err]/[q]) are a tag-mode-only concept —
+        # tool mode never emits a tag at all, so it must not be taught them.
+        text = build_instruction(self._cfg())
+        assert "TTS[ok]" not in text

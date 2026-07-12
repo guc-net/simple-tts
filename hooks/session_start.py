@@ -102,6 +102,12 @@ def build_tag_instruction(config):
         " specific enough to be useful.",
     ]
     lines += content_rules(config)
+    lines.append(
+        "  - Optionally mark the message's nature with a category in the tag:"
+        " `<!-- TTS[ok]: ... -->` for success/done, `<!-- TTS[err]: ... -->` for an"
+        " error or blocker, `<!-- TTS[q]: ... -->` when you need a decision or answer;"
+        " no brackets = neutral. The category plays a short matching earcon before the"
+        " speech. Always lowercase: ok / err / q.")
     lines.append("  - In this environment use ONLY the TTS tag — never call the simple-tts"
                  " `speak` MCP tool here (the tag is spoken automatically; the tool is for"
                  " environments without hooks and would cause double speech)")

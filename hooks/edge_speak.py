@@ -23,8 +23,12 @@ sound's quiet valley (see _mix_kitt) — the mix is done at playback with ffmpeg
 so the on-disk cache always holds the plain speech and the effect toggles
 instantly with config. Missing ffmpeg / sound file → the plain speech plays.
 
+When the payload carries an 'earcon' key ('ok'/'err'/'q'), a short bundled
+category sound (sounds/earcon_<cat>.mp3) plays first, blocking, before the
+speech itself — for both engines.
+
 Payload keys: edge_voice, edge_rate, edge_pitch, text, say_voice, say_rate,
-cache_max_mb, intro_sound.
+cache_max_mb, intro_sound, earcon.
 """
 
 import json
@@ -37,6 +41,7 @@ import tempfile
 import time
 
 import audio_cache as ac
+import tts_utils as tu
 
 # Obwiednia głośności odtwarzanego audio dla nakładki KITT (modulator „gada"
 # w rytm tego, co słychać). Zapisywana tuż przed afplay; nakładka ją czyta.
@@ -322,14 +327,32 @@ def _payload_from_env():
         return None
 
 
-def main():
-    payload = _payload_from_env()
-    if not payload:
+def _play_earcon(payload):
+    """Zagraj krótki dźwięk kategorii (earcon) przed mową, jeśli payload ma
+    pole 'earcon' ('ok'/'err'/'q') i odpowiadający plik istnieje. Blokujące
+    (afplay ~0,3 s), żeby earcon skończył się przed pierwszym słowem. Brak
+    pola, nieznana wartość albo brak pliku -> cicho pomiń (żaden earcon nie
+    jest błędem krytycznym)."""
+    cat = payload.get('earcon')
+    if cat not in ('ok', 'err', 'q'):
+        return
+    path = _sound_path(f'earcon_{cat}')
+    if os.path.exists(path):
+        _play(path)
+
+
+def _speak_payload(payload):
+    """Zsyntetyzuj (lub, dla engine='say', po prostu wypowiedz przez macOS `say`)
+    i odtwórz JEDEN payload mowy. To dawna zawartość main() — wołana zarówno dla
+    payloadu z env, jak i dla każdego kolejnego wpisu zdrenowanego z kolejki.
+    Jeśli payload niesie pole 'earcon', krótki dźwięk kategorii gra najpierw
+    (dla obu silników, edge i say)."""
+    _play_earcon(payload)
+    if payload.get('engine') == 'say':
+        _say(payload)
         return
 
     text = payload.get('text', '')
-    if not text:
-        return
 
     key = ac.key_for(payload)
     cache_file = ac.cache_path(payload)
@@ -392,6 +415,59 @@ def main():
                 os.unlink(tmp)
             except OSError:
                 pass
+
+
+def _drain_step():
+    """Jeden krok drenowania pod flockiem stanu (tu._locked_state): jeśli stan
+    NIE należy już do naszego pid (state.get("pid") != os.getpid() — ktoś inny
+    przejął bookkeeping albo nasz własny zapis stanu jeszcze nie dotarł), nie
+    ruszamy stanu w ogóle (zwracamy None z callbacku -> nic się nie zapisuje) i
+    sygnalizujemy stop. W przeciwnym razie zdejmujemy z kolejki (tu._queue_pop());
+    pusto -> zapisujemy stan bezczynny {"ts": now} (BEZ pid — sygnał, że nikt już
+    nie gra) i sygnalizujemy stop; jest wpis -> odświeżamy {"pid": nasz pid, "ts":
+    now} i zwracamy payload do odtworzenia.
+    Zwraca dict: {"stop": True} albo {"payload": <dict>}."""
+    result = {}
+
+    def cb(state):
+        if state.get("pid") != os.getpid():
+            result["stop"] = True
+            return None
+        payload = tu._queue_pop()
+        if payload is None:
+            result["stop"] = True
+            return {"ts": time.time()}
+        result["payload"] = payload
+        return {"pid": os.getpid(), "ts": time.time()}
+
+    tu._locked_state(cb)
+    return result
+
+
+def _drain_loop():
+    """Po odtworzeniu payloadu z env, dogrywa kolejno wszystko, co czeka w
+    kolejce mowy, aż będzie pusto (albo aż stan przestanie należeć do nas —
+    patrz _drain_step). 0.4 s oddechu między komunikatami. Jeden zepsuty wpis
+    kolejki (np. brakujący klucz payloadu) nie może przerwać drenowania reszty
+    — błąd trafia na stderr, pętla leci dalej."""
+    while True:
+        step = _drain_step()
+        if step.get("stop"):
+            return
+        time.sleep(0.4)
+        try:
+            _speak_payload(step["payload"])
+        except Exception as e:
+            print(f"edge_speak drain: skipping bad queued payload: {e}",
+                  file=sys.stderr)
+
+
+def main():
+    payload = _payload_from_env()
+    if not payload or not payload.get('text'):
+        return
+    _speak_payload(payload)
+    _drain_loop()
 
 
 if __name__ == '__main__':

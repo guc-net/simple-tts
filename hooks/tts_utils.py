@@ -19,6 +19,12 @@ STATE_PATH = os.path.expanduser("~/.claude/simple-tts-state.json")
 # UserPromptSubmit, rm od Stop). Katalog, bo Claude może chodzić w kilku sesjach.
 BUSY_DIR = os.path.expanduser("~/.claude/simple-tts-busy.d")
 ATTENTION_DIR = os.path.expanduser("~/.claude/simple-tts-attention.d")
+# Globalna kolejka mowy: gdy TTS gra, kolejne komunikaty non-priority trafiają
+# tu zamiast być porzucane (drenowanie kolejki to zadanie speak()/edge_speak.py,
+# nie tego modułu). Jeden katalog, wiele plików-wpisów.
+QUEUE_DIR = os.path.expanduser("~/.claude/simple-tts-queue.d")
+QUEUE_TTL_SECS = 40   # wpis starszy niż to = przeterminowany, pop go pomija
+QUEUE_MAX = 8         # maks. wpisów w kolejce; nadmiar wypycha najstarsze
 USER_PHONETICS_PATH = os.path.expanduser("~/.claude/simple-tts-phonetics.json")
 PHONETICS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "phonetics")
 EDGE_SPEAK_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "edge_speak.py")
@@ -57,6 +63,16 @@ DEFAULT_CONFIG = {
     # Overlay animation theme: kitt | cylon | spark.
     # Unknown values fall back to "spark". Switchable live (/tts theme <name>).
     "overlay_theme": "spark",
+    # Prefiks nazwy projektu przed komunikatem (z basename cwd hooka), np.
+    # "Simple tts: gotowe". "auto" = tylko gdy pracuje CO NAJMNIEJ JEDNA INNA
+    # sesja (fresh_busy_count(exclude_session_id=...) > 0 — własny znacznik
+    # busy jest wykluczony, niezależnie czy akurat postawiony); "on" = zawsze,
+    # gdy hook przekazał project; "off" = nigdy.
+    "announce_project": "auto",
+    # Czy grać krótki dźwięk (earcon) przed mową dla skategoryzowanych komunikatów
+    # (<!-- TTS[ok|err|q]: -->). Samo odtwarzanie earconu to osobny mechanizm
+    # (edge_speak.py) — tu tylko bramkujemy, czy w ogóle ma trafić do payloadu.
+    "earcons": True,
 }
 
 # Map of language names (as stored by the setup skill) to phonetic dict codes
@@ -123,9 +139,26 @@ def language_code(config):
     return LANGUAGE_CODES.get(lang, 'en')
 
 
+TTS_TAG_RE = re.compile(r'<!--\s*TTS(?:\[(ok|err|q)\])?\s*:\s*(.+?)\s*-->')
+
+
+def parse_tts_tag(text):
+    """Wyciąga (category, message) z PIERWSZEGO dopasowania znacznika TTS w
+    `text`, albo None gdy nie ma dopasowania. `category` to 'ok'/'err'/'q' albo
+    None (brak nawiasu — dzisiejsza forma, w pełni kompatybilna wstecz).
+    Nierozpoznana zawartość nawiasu (np. '[foo]') NIE dopasowuje się wcale —
+    cały tag jest wtedy traktowany jak nieistniejący (świadome, patrz testy)."""
+    match = TTS_TAG_RE.search(text)
+    if not match:
+        return None
+    return (match.group(1), match.group(2).strip())
+
+
 def extract_tts_from_transcript(transcript_path, search_lines=50):
     """
-    Extract <!-- TTS: message --> tag from the last assistant message in transcript.
+    Extract (category, message) from the <!-- TTS: message --> (or
+    <!-- TTS[ok|err|q]: message -->) tag in the last assistant message in
+    transcript. None when no tag is found.
     """
     try:
         transcript_path = os.path.expanduser(transcript_path)
@@ -140,11 +173,9 @@ def extract_tts_from_transcript(transcript_path, search_lines=50):
                     if isinstance(content, list):
                         for block in content:
                             if block.get('type') == 'text':
-                                match = re.search(
-                                    r'<!--\s*TTS:\s*(.+?)\s*-->', block.get('text', '')
-                                )
-                                if match:
-                                    return match.group(1).strip()
+                                result = parse_tts_tag(block.get('text', ''))
+                                if result:
+                                    return result
             except (json.JSONDecodeError, KeyError, TypeError):
                 continue
         return None
@@ -329,6 +360,38 @@ def session_busy_fresh(session_id, max_age=BUSY_STALE_SECS):
         return False
 
 
+def fresh_busy_count(exclude_session_id=None):
+    """Liczba znaczników busy świeższych niż BUSY_STALE_SECS, licząc TERAZ na
+    dysku. Gdy exclude_session_id podany, POMIJA znacznik tej sesji (po tej
+    samej sanityzacji nazwy pliku co _session_marker) — używane, by policzyć
+    INNE pracujące sesje niezależnie od tego, czy własny marker jest akurat
+    postawiony. Wywołanie bez argumentu nic nie pomija (jak dawniej). Błędy/
+    brak katalogu -> 0."""
+    exclude_name = (os.path.basename(_session_marker(BUSY_DIR, exclude_session_id))
+                    if exclude_session_id else None)
+    try:
+        names = os.listdir(BUSY_DIR)
+    except OSError:
+        return 0
+    now = time.time()
+    count = 0
+    for name in names:
+        if name == exclude_name:
+            continue
+        marker = os.path.join(BUSY_DIR, name)
+        try:
+            try:
+                with open(marker) as f:
+                    ts = int(f.read().strip())
+            except (ValueError, OSError):
+                ts = int(os.stat(marker).st_mtime)
+        except OSError:
+            continue
+        if (now - ts) < BUSY_STALE_SECS:
+            count += 1
+    return count
+
+
 def _set_session_marker(dir_path, session_id, on):
     """Postaw/zdejmij plikowy znacznik per-sesja dla nakładki. Ciche przy błędzie."""
     try:
@@ -357,6 +420,105 @@ def set_session_attention(session_id, on):
     _set_session_marker(ATTENTION_DIR, session_id, on)
 
 
+def _queue_files():
+    """Nazwy plików kolejki, posortowane rosnąco po liczbowym prefiksie nazwy
+    (część przed pierwszym '-' jako int — tak wpisy trafiają do kolejki w
+    kolejności FIFO). Plik bez poprawnego prefiksu jest uszkodzony: usuwamy go
+    od razu i pomijamy. Brak katalogu -> pusta lista (bez wyjątku)."""
+    try:
+        names = os.listdir(QUEUE_DIR)
+    except OSError:
+        return []
+    entries = []
+    for name in names:
+        prefix = name.split('-', 1)[0]
+        try:
+            n = int(prefix)
+        except ValueError:
+            try:
+                os.remove(os.path.join(QUEUE_DIR, name))
+            except OSError:
+                pass
+            continue
+        entries.append((n, name))
+    entries.sort(key=lambda t: t[0])
+    return [name for _, name in entries]
+
+
+def _queue_enforce_limit():
+    """Usuwa najstarsze wpisy kolejki, aż zostanie QUEUE_MAX. Błędy OSError
+    per plik są połykane (kolejka jest best-effort)."""
+    names = _queue_files()
+    excess = len(names) - QUEUE_MAX
+    for name in names[:max(excess, 0)]:
+        try:
+            os.remove(os.path.join(QUEUE_DIR, name))
+        except OSError:
+            pass
+
+
+def _queue_enqueue(payload):
+    """Dokłada `payload` (gotowy payload TTS, dict) do plikowej kolejki mowy.
+    Wołana wyłącznie pod istniejącym flockiem stanu (_locked_state na
+    STATE_PATH) — kolejka sama nie ma własnego locka. Zapisuje
+    f"{time.time_ns()}-{os.getpid()}.json" z {"payload": payload,
+    "enqueued_at": time.time()}, po czym egzekwuje QUEUE_MAX. Błędy OSError są
+    połykane: kolejka jest best-effort, TTS nie może wywalić hooka."""
+    try:
+        os.makedirs(QUEUE_DIR, exist_ok=True)
+        name = f"{time.time_ns()}-{os.getpid()}.json"
+        with open(os.path.join(QUEUE_DIR, name), "w") as f:
+            json.dump({"payload": payload, "enqueued_at": time.time()}, f)
+        _queue_enforce_limit()
+    except OSError:
+        pass
+
+
+def _queue_pop():
+    """Zdejmuje z kolejki najstarszy świeży wpis. Po drodze usuwa wpisy
+    przeterminowane (enqueued_at starszy niż QUEUE_TTL_SECS) i uszkodzone (zły
+    JSON, brak kluczy) — te po prostu pomija i usuwa ich pliki. Zwraca payload
+    (dict) pierwszego świeżego wpisu, unlinkując jego plik PRZED zwróceniem:
+    wołana pod flockiem stanu (_locked_state), to gwarantuje, że wpis zostanie
+    odtworzony dokładnie raz. None, gdy kolejka jest pusta lub katalog nie
+    istnieje."""
+    for name in _queue_files():
+        path = os.path.join(QUEUE_DIR, name)
+        try:
+            with open(path) as f:
+                data = json.load(f)
+            payload = data["payload"]
+            enqueued_at = data["enqueued_at"]
+        except (OSError, ValueError, KeyError, TypeError):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            continue
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        if (time.time() - enqueued_at) >= QUEUE_TTL_SECS:
+            continue
+        return payload
+    return None
+
+
+def _queue_clear():
+    """Usuwa wszystkie wpisy kolejki. Błędy OSError per plik są połykane;
+    brak katalogu to no-op (nic do wyczyszczenia)."""
+    try:
+        names = os.listdir(QUEUE_DIR)
+    except OSError:
+        return
+    for name in names:
+        try:
+            os.remove(os.path.join(QUEUE_DIR, name))
+        except OSError:
+            pass
+
+
 def _howl_on(config):
     """Czy syrena (wyjec) ma grać pod głosem. voice_howl: auto|on|off;
     auto = tylko przy motywie overlay 'kitt' (reszta motywów bez wyjca)."""
@@ -382,18 +544,80 @@ def _distortion_on(config):
     return str(config.get('overlay_theme', 'spark')).strip().lower() in ('kitt', 'cylon')
 
 
-def speak(text, priority=False, force=False):
-    """
-    Speak text using macOS say with the configured voice. Non-blocking:
-    `say` is detached and the hook returns immediately.
+def _project_label(project):
+    """cwd-basename -> etykieta do wypowiedzenia: separatory '-_.' na spacje,
+    otoczone spacje sprzątnięte. None/pusty -> None."""
+    if not project:
+        return None
+    label = re.sub(r'[-_.]+', ' ', project).strip()
+    return label or None
 
-    priority=True (notification hook): kills our running say (if any), always speaks.
-    priority=False (stop hook): stays silent while a previous say is still
-    playing or finished less than 2 seconds ago.
+
+def _should_announce_project(config, project, session_id=None):
+    """Czy doklejić prefiks projektu dla TEGO komunikatu. auto = gdy pracuje
+    co najmniej JEDNA INNA sesja (fresh_busy_count z wykluczeniem session_id
+    > 0) — spójnie dla wszystkich hooków, niezależnie od tego, czy własny
+    znacznik busy jest akurat postawiony (notification/ask_question) czy już
+    zdjęty (Stop). Brak `project` -> zawsze False."""
+    if not project:
+        return False
+    mode = str(config.get('announce_project', 'auto')).strip().lower()
+    if mode == 'off':
+        return False
+    if mode == 'on':
+        return True
+    return fresh_busy_count(exclude_session_id=session_id) > 0
+
+
+def _spawn(payload):
+    """Spawn the detached edge_speak.py helper with `payload` (dict) passed
+    through the SIMPLE_TTS_PAYLOAD env var (never appears in `ps`, survives
+    odd characters). This is the only Popen caller now — plain `say` payloads
+    (engine="say") go through the helper too, so they share its queue-drain
+    loop. Returns the new {"pid", "ts"} state on success; on (OSError,
+    FileNotFoundError) logs and returns None, leaving state untouched (per
+    _locked_state's contract: None = don't write). Must be called from inside
+    a _locked_state callback — it does not lock itself."""
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, EDGE_SPEAK_PATH],
+            start_new_session=True,
+            env={**os.environ, "SIMPLE_TTS_PAYLOAD": json.dumps(payload)},
+        )
+        return {"pid": proc.pid, "ts": time.time()}
+    except (OSError, FileNotFoundError) as e:
+        print(f"TTS error: {e}", file=sys.stderr)
+        return None
+
+
+def speak(text, priority=False, force=False, project=None, category=None,
+          session_id=None):
+    """
+    Speak text via the detached edge_speak.py helper. Non-blocking: the
+    helper is spawned and the hook returns immediately.
+
+    priority=True (notification hook): kills our running TTS (if any), clears
+    the speech queue, and always speaks.
+    priority=False (stop hook): while a previous TTS is still playing, the
+    message is enqueued (played once the running one finishes, via the
+    helper's own drain loop) instead of being spoken now; stays silent (drops
+    the message) only in the narrower "just finished <2s ago" window.
     force=True (speak_cli test mode): bypasses mute ("enabled": false)
     and quiet hours, but still requires a config.
+    project=<basename of hook cwd>: when _should_announce_project() decides
+    it's warranted (see announce_project config), a "<project label>: " prefix
+    is prepended to `text` before sanitization, and takes precedence over the
+    name prefix below for this message.
+    session_id=<caller's session id>: forwarded to _should_announce_project()
+    so "auto" mode can exclude the caller's own busy marker and count only
+    OTHER working sessions (see _should_announce_project docstring).
+    category=<'ok'|'err'|'q'|None>: parsed from a <!-- TTS[ok|err|q]: --> tag
+    (stop_tts.py only). When recognized and the "earcons" config allows it,
+    adds an "earcon" key to the payload — playing the sound is a separate
+    concern (edge_speak.py), this only threads the data through.
 
-    Silent no-op when the plugin is not configured, muted, or in quiet hours.
+    Silent no-op when the plugin is not configured, muted, in quiet hours, or
+    when there's nothing left to say after sanitization.
     """
     config = load_config()
     if config is None:
@@ -401,7 +625,56 @@ def speak(text, priority=False, force=False):
     if not force and (not config.get('enabled', True) or in_quiet_hours(config)):
         return
 
-    def check_and_kill(state):
+    project_prefixed = bool(_should_announce_project(config, project, session_id))
+    if project_prefixed:
+        text = f"{_project_label(project)}: {text}"
+
+    text = sanitize_for_tts(text, language_code(config))
+    if not text:
+        return
+
+    name = config.get('name', '')
+    if not project_prefixed and name and random.random() < config.get('name_chance', 0.3):
+        if not text.lower().startswith(name.lower()):
+            text = f"{name}, {text[0].lower() + text[1:]}" if len(text) > 1 else f"{name}, {text}"
+
+    voice = config.get('voice', 'Krzysztof')
+    rate = str(config.get('rate', 220))
+
+    edge_voice = edge_voice_for(config) if config.get('engine') == 'edge' else None
+    earcon = category if category in ("ok", "err", "q") and config.get("earcons", True) else None
+
+    if edge_voice:
+        payload = {
+            "engine": "edge",
+            "edge_voice": edge_voice,
+            "edge_rate": str(config.get('edge_rate', '+0%')),
+            "text": text,
+            "say_voice": voice,
+            "say_rate": rate,
+            "cache_max_mb": config.get('cache_max_mb', 100),
+            # Wyjec (syrena) i zniekształcenie (pitch) są NIEZALEŻNE:
+            #  - wyjec: voice_howl auto→tylko motyw KITT / on / off,
+            #  - zniekształcenie: voice_distortion (−20 Hz), osobno.
+            "intro_sound": (config.get('intro_sound', 'kitt')
+                            if _howl_on(config) else 'none'),
+            "edge_pitch": "-20Hz" if _distortion_on(config) else "+0Hz",
+        }
+    else:
+        # Minimal on purpose: no intro_sound/edge_pitch, so `say` payloads
+        # play as plain voice (today's behavior), just rendered to a file and
+        # played via the helper (afplay) instead of a direct streaming `say`.
+        payload = {
+            "engine": "say",
+            "text": text,
+            "say_voice": voice,
+            "say_rate": rate,
+        }
+
+    if earcon:
+        payload["earcon"] = earcon
+
+    def cb(state):
         pid, ts = state.get('pid'), state.get('ts', 0)
         if priority:
             if pid and _is_our_tts(pid):
@@ -412,63 +685,18 @@ def speak(text, priority=False, force=False):
                     os.killpg(os.getpgid(pid), signal.SIGTERM)
                 except OSError:
                     pass
+            _queue_clear()
+            return _spawn(payload)
+        # Non-priority: still speaking -> enqueue instead of dropping.
+        if pid and _is_our_tts(pid):
+            _queue_enqueue(payload)
             return None
-        # Non-priority: bail out if still speaking or just finished
-        if (pid and _is_our_tts(pid)) or (time.time() - ts) < 2.0:
-            raise _StillSpeaking()
-        return None
+        # Just finished (<2s ago): drop, matching today's behavior.
+        if (time.time() - ts) < 2.0:
+            return None
+        return _spawn(payload)
 
-    try:
-        _locked_state(check_and_kill)
-    except _StillSpeaking:
-        return
-
-    text = sanitize_for_tts(text, language_code(config))
-
-    name = config.get('name', '')
-    if name and random.random() < config.get('name_chance', 0.3):
-        if not text.lower().startswith(name.lower()):
-            text = f"{name}, {text[0].lower() + text[1:]}" if len(text) > 1 else f"{name}, {text}"
-
-    voice = config.get('voice', 'Krzysztof')
-    rate = str(config.get('rate', 220))
-
-    edge_voice = edge_voice_for(config) if config.get('engine') == 'edge' else None
-
-    try:
-        if edge_voice:
-            # Detached helper: synthesizes via edge-tts and plays it, falling
-            # back to `say` on any failure. Text + voices go through the env so
-            # they never appear in `ps` and survive odd characters.
-            payload = json.dumps({
-                "edge_voice": edge_voice,
-                "edge_rate": str(config.get('edge_rate', '+0%')),
-                "text": text,
-                "say_voice": voice,
-                "say_rate": rate,
-                "cache_max_mb": config.get('cache_max_mb', 100),
-                # Wyjec (syrena) i zniekształcenie (pitch) są NIEZALEŻNE:
-                #  - wyjec: voice_howl auto→tylko motyw KITT / on / off,
-                #  - zniekształcenie: voice_distortion (−20 Hz), osobno.
-                "intro_sound": (config.get('intro_sound', 'kitt')
-                                if _howl_on(config) else 'none'),
-                "edge_pitch": "-20Hz" if _distortion_on(config) else "+0Hz",
-            })
-            proc = subprocess.Popen(
-                [sys.executable, EDGE_SPEAK_PATH],
-                start_new_session=True,
-                env={**os.environ, "SIMPLE_TTS_PAYLOAD": payload},
-            )
-        else:
-            proc = subprocess.Popen(['say', '-v', voice, '-r', rate, text],
-                                    start_new_session=True)
-        _locked_state(lambda state: {"pid": proc.pid, "ts": time.time()})
-    except (OSError, FileNotFoundError) as e:
-        print(f"TTS error: {e}", file=sys.stderr)
-
-
-class _StillSpeaking(Exception):
-    pass
+    _locked_state(cb)
 
 
 def read_hook_input():
