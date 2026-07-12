@@ -95,6 +95,18 @@
           }
         ]
       }
+    ],
+    "StopFailure": [
+      {
+        "matcher": "rate_limit|billing_error|max_output_tokens|overloaded",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/limit_tts.py\"",
+            "timeout": 5000
+          }
+        ]
+      }
     ]
   }
 }

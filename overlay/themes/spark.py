@@ -193,7 +193,8 @@ class SparkTheme(Theme):
         self.lens_ph = [rng.uniform(0, math.tau) for _ in range(MAXL)]  # faza wobble
         self.cur_mult = SPEED_MULT["idle"]
         self.lens_op = LENS_OP["idle"]
-        self.attn_gate = 0.0
+        self.attn_g = [0.0] * MAXL                 # gate koloru uwagi PER SOCZEWKA
+        self.attn_stream = 0.0                     # gate koloru uwagi dla iskier (globalny)
 
     def _sprites(self):
         s = self.scale
@@ -267,11 +268,15 @@ class SparkTheme(Theme):
 
         self.cur_mult = ease_step(self.cur_mult, mult_t, dt, 0.5)
         self.dens = ease_step(self.dens, dens_t, dt, 0.5)
-        stau = 0.06 if mode == "speak" else 0.4    # mowa: szybka, czuła reakcja
+        stau = 0.045 if mode == "speak" else 0.4   # mowa: szybka, czuła reakcja
         self.sx = ease_step(self.sx, sx_t, dt, stau)
         self.sy = ease_step(self.sy, sy_t, dt, stau)
         self.lens_op = ease_step(self.lens_op, op_t, dt, 0.4)
-        self.attn_gate = ease_step(self.attn_gate, 1.0 if waiting else 0.0, dt, 0.5)
+        # ile zadań czeka na usera -> tyle soczewek na niebiesko (reszta zielona);
+        # przy samym bool waiting (bez licznika) traktujemy to jak jednego czekającego.
+        # Strumień iskier robi się niebieski, gdy czeka ktokolwiek (globalny sygnał).
+        wcount = int(self.snap.get("waiting_count", 1 if waiting else 0))
+        self.attn_stream = ease_step(self.attn_stream, 1.0 if wcount > 0 else 0.0, dt, 0.5)
 
         # --- rozdzielenie soczewek (1 na agenta) + sekwencja scal↔obróć ----
         speak = mode == "speak"
@@ -281,12 +286,13 @@ class SparkTheme(Theme):
         extra = max(self.lens_a[i] for i in range(1, MAXL))
         merged = spread < 0.6 and extra < 0.06
         # obracaj dopiero PO scaleniu; scalaj/odobracaj zawsze swobodnie.
-        # Obrót MOWY jest szybki (tau 0.12) — dźwięk startuje od razu, więc oko
-        # musi być poziomo, zanim się odezwie; inaczej „gada przekrzywione".
+        # Obrót DO MOWY jest szybki (tau 0.07) — dźwięk startuje od razu, więc
+        # oko musi być poziomo, zanim się odezwie; inaczej „gada przekrzywione".
+        # Powrót z mowy zostaje płynny (tau 0.12) — nie ma po co się spieszyć.
         rot_goal = 1.0 if speak else 0.0
         if rot_goal > self.rphase and not merged:
             rot_goal = self.rphase
-        self.rphase = ease_step(self.rphase, rot_goal, dt, 0.12)
+        self.rphase = ease_step(self.rphase, rot_goal, dt, 0.07 if speak else 0.12)
 
         # drżenie reaktywne PER SOCZEWKA: każde oko odlicza własny licznik i
         # ma własną obwiednię (wjeżdża szybko, wraca płynnie)
@@ -307,15 +313,21 @@ class SparkTheme(Theme):
             self.lens_a[i] = ease_step(self.lens_a[i], 1.0 if active else 0.0,
                                        dt, mtau_a)
 
+        # kolor uwagi PER SOCZEWKA: pierwsze min(wcount, eff) soczewek na niebiesko,
+        # reszta zostaje zielona (jedno czekające zadanie -> jedna niebieska soczewka)
+        wlens = min(wcount, eff)
+        for i in range(MAXL):
+            self.attn_g[i] = ease_step(self.attn_g[i], 1.0 if i < wlens else 0.0, dt, 0.5)
+
         self._draw_lens(now, mode)
         self._draw_stream(dt, now)
 
     # --- oko (zawsze zielone, obracane płynnie, dzielone wg liczby agentów) -
     def _draw_lens(self, now, mode):
-        g = self.attn_gate                          # 0 = zielone, 1 = kolor uwagi
         attn_key = "g_attn_speak" if mode == "speak" else "g_attn"
         base_ang = self.rphase * (math.pi / 2.0)
         for i in range(MAXL):
+            g = self.attn_g[i]                      # 0 = zielone, 1 = kolor uwagi (per oko)
             # drżenie + przechył OSOBNO per oko: własna obwiednia + faza wobble,
             # więc dwa oczy nie trzęsą się identycznie
             a = self.shake_amp[i]
@@ -342,7 +354,7 @@ class SparkTheme(Theme):
 
     # --- przenośnik iskier (powoli z lewej -> szybko w prawo) --------------
     def _draw_stream(self, dt, now):
-        amber = self.attn_gate > 0.5
+        amber = self.attn_stream > 0.5
         dot_key = "adot" if amber else "dot"
         w, cx, mid = self.w, self.cx, self.mid
         fade_edge = w * 0.05

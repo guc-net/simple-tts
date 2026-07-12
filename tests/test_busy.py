@@ -136,17 +136,17 @@ def test_post_tool_use_hook_clears_attention(write_config, isolated_paths, monke
     assert not (isolated_paths / "attention.d" / "sess3").exists()
 
 
-def test_post_tool_use_hook_fast_path_skips_stdin(isolated_paths, monkeypatch):
-    """Brak znaczników -> hook wychodzi bez czytania stdin (zero kosztu na
-    każdym wywołaniu narzędzia)."""
+def test_post_tool_use_hook_heartbeats_busy(write_config, isolated_paths, monkeypatch):
+    """Każde wykonane narzędzie odświeża znacznik busy (heartbeat) -> tryb
+    'think' nie gaśnie, dopóki agent (lub jego subagent) wykonuje narzędzia,
+    nawet gdy tura głównej sesji zdążyła się w międzyczasie skończyć."""
+    write_config()
     import attention_clear
-
-    def _boom():
-        raise AssertionError("stdin nie powinien być czytany")
-
-    monkeypatch.setattr(attention_clear, "read_hook_input", _boom)
+    monkeypatch.setattr(attention_clear, "read_hook_input",
+                        lambda: {"session_id": "sessHB"})
     with pytest.raises(SystemExit):
         attention_clear.main()
+    assert tts_utils.session_busy_fresh("sessHB")
 
 
 def test_session_busy_fresh_true_when_recent(isolated_paths):
