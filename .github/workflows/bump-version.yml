@@ -62,7 +62,7 @@ jobs:
 
       - name: Update marketplace
         run: |
-          gh api repos/usterk/simple/dispatches \
+          gh api repos/guc-net/simple/dispatches \
             -f event_type="plugin-update" \
             -f "client_payload[plugin]=simple-tts" \
             -f "client_payload[version]=${{ steps.version.outputs.version }}"

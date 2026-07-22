@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Claude Code plugin that speaks short TTS summaries when Claude finishes a task or needs user attention. Uses Microsoft edge-tts neural voices by default (via `uvx`, online) with macOS `say` as the offline fallback. Distributed via the `usterk/simple` marketplace.
+A Claude Code plugin that speaks short TTS summaries when Claude finishes a task or needs user attention. Uses Microsoft edge-tts neural voices by default (via `uvx`, online) with macOS `say` as the offline fallback. Distributed via the `guc-net/simple` marketplace.
 
 ## Architecture
 
@@ -63,7 +63,7 @@ Both run in CI (`.github/workflows/test.yml`) on every push and PR.
 Every push to `main` triggers `.github/workflows/bump-version.yml`:
 1. Determines bump type from commit message prefix: `feat:` → minor, `feat!:`/`breaking` → major, everything else → patch
 2. Bumps version in `plugin.json`, commits with `[skip ci]`, creates git tag
-3. Sends `repository_dispatch` to `usterk/simple` marketplace to update version and `ref`
+3. Sends `repository_dispatch` to `guc-net/simple` marketplace to update version and `ref`
 
 **Commit message conventions**: prefix with `feat:` for minor bump, `feat!:` or `breaking` for major. No prefix = patch.
 

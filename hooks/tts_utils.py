@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shared TTS utilities for Claude Code simple-tts plugin (usterk/simple-tts)"""
+"""Shared TTS utilities for Claude Code simple-tts plugin (guc-net/simple-tts)"""
 
 import fcntl
 import json

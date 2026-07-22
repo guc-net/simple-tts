@@ -12,7 +12,7 @@ By default it uses **Microsoft edge-tts** neural voices (high quality, online â€
 
 ```bash
 # 1. Add marketplace
-/plugin marketplace add usterk/simple
+/plugin marketplace add guc-net/simple
 
 # 2. Install plugin
 /plugin install simple-tts@simple
