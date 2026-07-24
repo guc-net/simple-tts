@@ -7,7 +7,7 @@ on:
 
 jobs:
   test:
-    runs-on: [self-hosted, guc-net-ci]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
